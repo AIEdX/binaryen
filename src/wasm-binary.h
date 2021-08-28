@@ -1242,6 +1242,7 @@ public:
   void writeInlineString(const char* name);
   void writeEscapedName(const char* name);
   void writeInlineBuffer(const char* data, size_t size);
+  void writeData(const char* data, size_t size);
 
   struct Buffer {
     const char* data;
@@ -1251,11 +1252,7 @@ public:
       : data(data), size(size), pointerLocation(pointerLocation) {}
   };
 
-  std::vector<Buffer> buffersToWrite;
-
   void emitBuffer(const char* data, size_t size);
-  void emitString(const char* str);
-  void finishUp();
 
   Module* getModule() { return wasm; }
 
