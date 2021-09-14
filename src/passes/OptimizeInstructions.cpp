@@ -46,12 +46,6 @@
 
 namespace wasm {
 
-Name I32_EXPR = "i32.expr";
-Name I64_EXPR = "i64.expr";
-Name F32_EXPR = "f32.expr";
-Name F64_EXPR = "f64.expr";
-Name ANY_EXPR = "any.expr";
-
 // Useful information about locals
 struct LocalInfo {
   static const Index kUnknown = Index(-1);
@@ -101,8 +95,8 @@ struct LocalScanner : PostWalker<LocalScanner> {
       return;
     }
     // an integer var, worth processing
-    auto* value = Properties::getFallthrough(
-      curr->value, passOptions, getModule()->features);
+    auto* value =
+      Properties::getFallthrough(curr->value, passOptions, *getModule());
     auto& info = localInfo[curr->index];
     info.maxBits = std::max(info.maxBits, Bits::getMaxBits(value, this));
     auto signExtBits = LocalInfo::kUnknown;
@@ -422,6 +416,38 @@ struct OptimizeInstructions
         }
       }
       {
+        // -x * -y   ==>   x * y
+        //   where  x, y  are integers
+        Binary* bin;
+        Expression *x, *y;
+        if (matches(curr,
+                    binary(&bin,
+                           Mul,
+                           binary(Sub, ival(0), any(&x)),
+                           binary(Sub, ival(0), any(&y))))) {
+          bin->left = x;
+          bin->right = y;
+          return replaceCurrent(curr);
+        }
+      }
+      {
+        // -x * y   ==>   -(x * y)
+        // x * -y   ==>   -(x * y)
+        //   where  x, y  are integers
+        Expression *x, *y;
+        if ((matches(curr,
+                     binary(Mul, binary(Sub, ival(0), any(&x)), any(&y))) ||
+             matches(curr,
+                     binary(Mul, any(&x), binary(Sub, ival(0), any(&y))))) &&
+            !x->is<Const>() && !y->is<Const>()) {
+          Builder builder(*getModule());
+          return replaceCurrent(
+            builder.makeBinary(Abstract::getBinary(curr->type, Sub),
+                               builder.makeConst(Literal::makeZero(curr->type)),
+                               builder.makeBinary(curr->op, x, y)));
+        }
+      }
+      {
         if (getModule()->features.hasSignExt()) {
           Const *c1, *c2;
           Expression* x;
@@ -469,9 +495,9 @@ struct OptimizeInstructions
       Index extraLeftShifts;
       auto bits = Properties::getAlmostSignExtBits(curr, extraLeftShifts);
       if (extraLeftShifts == 0) {
-        if (auto* load = Properties::getFallthrough(
-                           ext, getPassOptions(), getModule()->features)
-                           ->dynCast<Load>()) {
+        if (auto* load =
+              Properties::getFallthrough(ext, getPassOptions(), *getModule())
+                ->dynCast<Load>()) {
           // pattern match a load of 8 bits and a sign extend using a shl of
           // 24 then shr_s of 24 as well, etc.
           if (LoadUtils::canBeSigned(load) &&
@@ -1152,9 +1178,9 @@ struct OptimizeInstructions
     // the fallthrough value there. It takes more work to optimize this case,
     // but it is pretty important to allow a call_ref to become a fast direct
     // call, so make the effort.
-    if (auto* ref =
-          Properties::getFallthrough(curr->target, getPassOptions(), features)
-            ->dynCast<RefFunc>()) {
+    if (auto* ref = Properties::getFallthrough(
+                      curr->target, getPassOptions(), *getModule())
+                      ->dynCast<RefFunc>()) {
       // Check if the fallthrough make sense. We may have cast it to a different
       // type, which would be a problem - we'd be replacing a call_ref to one
       // type with a direct call to a function of another type. That would trap
@@ -1290,8 +1316,8 @@ struct OptimizeInstructions
     Builder builder(*getModule());
     auto passOptions = getPassOptions();
 
-    auto fallthrough = Properties::getFallthrough(
-      curr->ref, getPassOptions(), getModule()->features);
+    auto fallthrough =
+      Properties::getFallthrough(curr->ref, getPassOptions(), *getModule());
 
     // If the value is a null, it will just flow through, and we do not need the
     // cast. However, if that would change the type, then things are less
@@ -1358,8 +1384,6 @@ struct OptimizeInstructions
       }
     }
 
-    auto features = getModule()->features;
-
     // Repeated identical ref.cast operations are unnecessary, if using the
     // exact same rtt - the result will be the same. Find the immediate child
     // cast, if there is one, and see if it is identical.
@@ -1370,7 +1394,7 @@ struct OptimizeInstructions
       // RefCast falls through the value, so instead of calling getFallthrough()
       // to look through all fallthroughs, we must iterate manually. Keep going
       // until we reach either the end of things falling-through, or a cast.
-      ref = Properties::getImmediateFallthrough(ref, passOptions, features);
+      ref = Properties::getImmediateFallthrough(ref, passOptions, *getModule());
       if (ref == last) {
         break;
       }
@@ -1544,7 +1568,6 @@ private:
     // also ok to have side effects here, if we can remove them, as we are also
     // checking if we can remove the two inputs anyhow.)
     auto passOptions = getPassOptions();
-    auto features = getModule()->features;
     if (EffectAnalyzer(passOptions, *getModule(), left)
           .hasUnremovableSideEffects() ||
         EffectAnalyzer(passOptions, *getModule(), right)
@@ -1553,14 +1576,14 @@ private:
     }
 
     // Ignore extraneous things and compare them structurally.
-    left = Properties::getFallthrough(left, passOptions, features);
-    right = Properties::getFallthrough(right, passOptions, features);
+    left = Properties::getFallthrough(left, passOptions, *getModule());
+    right = Properties::getFallthrough(right, passOptions, *getModule());
     if (!ExpressionAnalyzer::equal(left, right)) {
       return false;
     }
     // To be equal, they must also be known to return the same result
     // deterministically.
-    if (Properties::isIntrinsicallyNondeterministic(left, features)) {
+    if (Properties::isGenerative(left, getModule()->features)) {
       return false;
     }
     return true;
@@ -1794,6 +1817,25 @@ private:
           return builder.makeBinary(
             Abstract::getBinary(type, Or), bin, curr->ifTrue);
         }
+      }
+    }
+    if (curr->type == Type::i32 &&
+        Bits::getMaxBits(curr->condition, this) <= 1 &&
+        Bits::getMaxBits(curr->ifTrue, this) <= 1 &&
+        Bits::getMaxBits(curr->ifFalse, this) <= 1) {
+      // The condition and both arms are i32 booleans, which allows us to do
+      // boolean optimizations.
+      Expression* x;
+      Expression* y;
+
+      // x ? y : 0   ==>   x & y
+      if (matches(curr, select(any(&y), ival(0), any(&x)))) {
+        return builder.makeBinary(AndInt32, y, x);
+      }
+
+      // x ? 1 : y   ==>   x | y
+      if (matches(curr, select(ival(1), any(&y), any(&x)))) {
+        return builder.makeBinary(OrInt32, y, x);
       }
     }
     {
@@ -2223,6 +2265,24 @@ private:
     if (matches(curr, binary(Mul, pure(&left), ival(0))) ||
         matches(curr, binary(And, pure(&left), ival(0)))) {
       return right;
+    }
+    // -x * C   ==>    x * -C,   if  shrinkLevel != 0  or  C != C_pot
+    // -x * C   ==>   -(x * C),  otherwise
+    //    where  x, C  are integers
+    Binary* inner;
+    if (matches(
+          curr,
+          binary(Mul, binary(&inner, Sub, ival(0), any(&left)), ival()))) {
+      if (getPassOptions().shrinkLevel != 0 ||
+          !Bits::isPowerOf2(right->value.getInteger())) {
+        right->value = right->value.neg();
+        curr->left = left;
+        return curr;
+      } else {
+        curr->left = left;
+        Const* zero = inner->left->cast<Const>();
+        return builder.makeBinary(inner->op, zero, curr);
+      }
     }
     // x == 0   ==>   eqz x
     if (matches(curr, binary(Eq, any(&left), ival(0)))) {

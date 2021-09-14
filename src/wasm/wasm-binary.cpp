@@ -584,11 +584,8 @@ void WasmBinaryWriter::writeElementSegments() {
     Index tableIdx = 0;
 
     bool isPassive = segment->table.isNull();
-    // if all items are ref.func, we can use the shorter form.
-    bool usesExpressions =
-      std::any_of(segment->data.begin(),
-                  segment->data.end(),
-                  [](Expression* curr) { return !curr->is<RefFunc>(); });
+    // If the segment is MVP, we can use the shorter form.
+    bool usesExpressions = TableUtils::usesExpressions(segment.get(), wasm);
 
     bool hasTableIndex = false;
     if (!isPassive) {
@@ -620,7 +617,7 @@ void WasmBinaryWriter::writeElementSegments() {
         // elemType
         writeType(segment->type);
       } else {
-        // elemKind funcref
+        // MVP elemKind of funcref
         o << U32LEB(0);
       }
     }
@@ -1070,7 +1067,7 @@ void WasmBinaryWriter::writeFeaturesSection() {
   finishSection(start);
 }
 
-void WasmBinaryWriter::writeDylinkSection() {
+void WasmBinaryWriter::writeLegacyDylinkSection() {
   if (!wasm->dylinkSection) {
     return;
   }
@@ -1085,9 +1082,41 @@ void WasmBinaryWriter::writeDylinkSection() {
   for (auto& neededDynlib : wasm->dylinkSection->neededDynlibs) {
     writeInlineString(neededDynlib.c_str());
   }
+  finishSection(start);
+}
+
+void WasmBinaryWriter::writeDylinkSection() {
+  if (!wasm->dylinkSection) {
+    return;
+  }
+
+  if (wasm->dylinkSection->isLegacy) {
+    writeLegacyDylinkSection();
+    return;
+  }
+
+  auto start = startSection(BinaryConsts::User);
+  writeInlineString(BinaryConsts::UserSections::Dylink0);
+
+  auto substart =
+    startSubsection(BinaryConsts::UserSections::Subsection::DylinkMemInfo);
+  o << U32LEB(wasm->dylinkSection->memorySize);
+  o << U32LEB(wasm->dylinkSection->memoryAlignment);
+  o << U32LEB(wasm->dylinkSection->tableSize);
+  o << U32LEB(wasm->dylinkSection->tableAlignment);
+  finishSubsection(substart);
+
+  if (wasm->dylinkSection->neededDynlibs.size()) {
+    substart =
+      startSubsection(BinaryConsts::UserSections::Subsection::DylinkNeeded);
+    o << U32LEB(wasm->dylinkSection->neededDynlibs.size());
+    for (auto& neededDynlib : wasm->dylinkSection->neededDynlibs) {
+      writeInlineString(neededDynlib.c_str());
+    }
+    finishSubsection(substart);
+  }
 
   writeData(wasm->dylinkSection->tail.data(), wasm->dylinkSection->tail.size());
-
   finishSection(start);
 }
 
@@ -1438,6 +1467,7 @@ void WasmBinaryBuilder::read() {
 }
 
 void WasmBinaryBuilder::readUserSection(size_t payloadLen) {
+  BYN_TRACE("== readUserSection\n");
   auto oldPos = pos;
   Name sectionName = getInlineString();
   size_t read = pos - oldPos;
@@ -1455,6 +1485,8 @@ void WasmBinaryBuilder::readUserSection(size_t payloadLen) {
     readFeatures(payloadLen);
   } else if (sectionName.equals(BinaryConsts::UserSections::Dylink)) {
     readDylink(payloadLen);
+  } else if (sectionName.equals(BinaryConsts::UserSections::Dylink0)) {
+    readDylink0(payloadLen);
   } else {
     // an unfamiliar custom section
     if (sectionName.equals(BinaryConsts::UserSections::Linking)) {
@@ -2864,12 +2896,12 @@ void WasmBinaryBuilder::readElementSegments() {
       if (usesExpressions) {
         segment->type = getType();
         if (!segment->type.isFunction()) {
-          throwError("Invalid type for an element segment");
+          throwError("Invalid type for a usesExpressions element segment");
         }
       } else {
         auto elemKind = getU32LEB();
         if (elemKind != 0x0) {
-          throwError("Only funcref elem kinds are valid.");
+          throwError("Invalid kind (!= funcref(0)) since !usesExpressions.");
         }
       }
     }
@@ -3255,6 +3287,7 @@ void WasmBinaryBuilder::readDylink(size_t payloadLen) {
 
   auto sectionPos = pos;
 
+  wasm.dylinkSection->isLegacy = true;
   wasm.dylinkSection->memorySize = getU32LEB();
   wasm.dylinkSection->memoryAlignment = getU32LEB();
   wasm.dylinkSection->tableSize = getU32LEB();
@@ -3265,12 +3298,50 @@ void WasmBinaryBuilder::readDylink(size_t payloadLen) {
     wasm.dylinkSection->neededDynlibs.push_back(getInlineString());
   }
 
-  size_t remaining = (sectionPos + payloadLen) - pos;
-  auto tail = getByteView(remaining);
-  wasm.dylinkSection->tail = {tail.first, tail.second};
-
   if (pos != sectionPos + payloadLen) {
-    throwError("bad features section size");
+    throwError("bad dylink section size");
+  }
+}
+
+void WasmBinaryBuilder::readDylink0(size_t payloadLen) {
+  BYN_TRACE("== readDylink0\n");
+  auto sectionPos = pos;
+  uint32_t lastType = 0;
+
+  wasm.dylinkSection = make_unique<DylinkSection>();
+  while (pos < sectionPos + payloadLen) {
+    auto oldPos = pos;
+    auto dylinkType = getU32LEB();
+    if (lastType && dylinkType <= lastType) {
+      std::cerr << "warning: out-of-order dylink.0 subsection: " << dylinkType
+                << std::endl;
+    }
+    lastType = dylinkType;
+    auto subsectionSize = getU32LEB();
+    auto subsectionPos = pos;
+    if (dylinkType == BinaryConsts::UserSections::Subsection::DylinkMemInfo) {
+      wasm.dylinkSection->memorySize = getU32LEB();
+      wasm.dylinkSection->memoryAlignment = getU32LEB();
+      wasm.dylinkSection->tableSize = getU32LEB();
+      wasm.dylinkSection->tableAlignment = getU32LEB();
+    } else if (dylinkType ==
+               BinaryConsts::UserSections::Subsection::DylinkNeeded) {
+      size_t numNeededDynlibs = getU32LEB();
+      for (size_t i = 0; i < numNeededDynlibs; ++i) {
+        wasm.dylinkSection->neededDynlibs.push_back(getInlineString());
+      }
+    } else {
+      // Unknown subsection.  Stop parsing now and store the rest of
+      // the section verbatim.
+      pos = oldPos;
+      size_t remaining = (sectionPos + payloadLen) - pos;
+      auto tail = getByteView(remaining);
+      wasm.dylinkSection->tail = {tail.first, tail.second};
+      break;
+    }
+    if (pos != subsectionPos + subsectionSize) {
+      throwError("bad dylink.0 subsection position change");
+    }
   }
 }
 
@@ -3575,6 +3646,9 @@ BinaryConsts::ASTNodes WasmBinaryBuilder::readExpression(Expression*& curr) {
         break;
       }
       if (maybeVisitArrayNew(curr, opcode)) {
+        break;
+      }
+      if (maybeVisitArrayInit(curr, opcode)) {
         break;
       }
       if (maybeVisitArrayGet(curr, opcode)) {
@@ -6508,6 +6582,22 @@ bool WasmBinaryBuilder::maybeVisitArrayNew(Expression*& out, uint32_t code) {
     init = popNonVoidExpression();
   }
   out = Builder(wasm).makeArrayNew(rtt, size, init);
+  return true;
+}
+
+bool WasmBinaryBuilder::maybeVisitArrayInit(Expression*& out, uint32_t code) {
+  if (code != BinaryConsts::ArrayInit) {
+    return false;
+  }
+  auto heapType = getIndexedHeapType();
+  auto size = getU32LEB();
+  auto* rtt = popNonVoidExpression();
+  validateHeapTypeUsingChild(rtt, heapType);
+  std::vector<Expression*> values(size);
+  for (size_t i = 0; i < size; i++) {
+    values[size - i - 1] = popNonVoidExpression();
+  }
+  out = Builder(wasm).makeArrayInit(rtt, values);
   return true;
 }
 

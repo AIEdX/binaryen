@@ -94,6 +94,7 @@ public:
   Flow visitStructNew(StructNew* curr) { return Flow(NONCONSTANT_FLOW); }
   Flow visitStructGet(StructGet* curr) { return Flow(NONCONSTANT_FLOW); }
   Flow visitArrayNew(ArrayNew* curr) { return Flow(NONCONSTANT_FLOW); }
+  Flow visitArrayInit(ArrayInit* curr) { return Flow(NONCONSTANT_FLOW); }
   Flow visitArrayGet(ArrayGet* curr) { return Flow(NONCONSTANT_FLOW); }
   Flow visitArrayLen(ArrayLen* curr) { return Flow(NONCONSTANT_FLOW); }
   Flow visitArrayCopy(ArrayCopy* curr) { return Flow(NONCONSTANT_FLOW); }
@@ -308,15 +309,15 @@ private:
         // creates a new, unique struct, even if the data is equal), and so
         // PrecomputingExpressionRunner will return a nonconstant flow for all
         // GC heap operations. (We could also have used
-        // Properties::isIntrinsicallyNondeterministic here, but that would be
-        // less efficient to re-scan the entire expression.)
+        // Properties::isGenerative here, but that would be less efficient to
+        // re-scan the entire expression.)
         //
         // (Other side effects are fine; if an expression does a call and we
         // somehow know the entire expression precomputes to a 42, then we can
         // propagate that 42 along to the users, regardless of whatever the call
         // did globally.)
         auto values = precomputeValue(Properties::getFallthrough(
-          set->value, getPassOptions(), getModule()->features));
+          set->value, getPassOptions(), *getModule()));
         // Fix up the value. The computation we just did was to look at the
         // fallthrough, then precompute that; that looks through expressions
         // that pass through the value. Normally that does not matter here,

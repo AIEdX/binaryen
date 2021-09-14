@@ -2006,6 +2006,10 @@ struct PrintExpressionContents
     o << "with_rtt ";
     TypeNamePrinter(o, wasm).print(curr->rtt->type.getHeapType());
   }
+  void visitArrayInit(ArrayInit* curr) {
+    printMedium(o, "array.init ");
+    TypeNamePrinter(o, wasm).print(curr->rtt->type.getHeapType());
+  }
   void visitArrayGet(ArrayGet* curr) {
     if (printUnreachableReplacement(curr->ref)) {
       return;
@@ -2735,12 +2739,9 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     }
   }
   void visitElementSegment(ElementSegment* curr) {
-    bool allElementsRefFunc =
-      std::all_of(curr->data.begin(), curr->data.end(), [](Expression* entry) {
-        return entry->is<RefFunc>();
-      });
+    bool usesExpressions = TableUtils::usesExpressions(curr, currModule);
     auto printElemType = [&]() {
-      if (allElementsRefFunc) {
+      if (!usesExpressions) {
         o << "func";
       } else {
         printType(o, curr->type, currModule);
@@ -2758,7 +2759,7 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     }
 
     if (curr->table.is()) {
-      if (!allElementsRefFunc || currModule->tables.size() > 1) {
+      if (usesExpressions || currModule->tables.size() > 1) {
         // tableuse
         o << " (table ";
         printName(curr->table, o);
@@ -2768,7 +2769,7 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       o << ' ';
       visit(curr->offset);
 
-      if (!allElementsRefFunc || currModule->tables.size() > 1) {
+      if (usesExpressions || currModule->tables.size() > 1) {
         o << ' ';
         printElemType();
       }
@@ -2777,7 +2778,7 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       printElemType();
     }
 
-    if (allElementsRefFunc) {
+    if (!usesExpressions) {
       for (auto* entry : curr->data) {
         auto* refFunc = entry->cast<RefFunc>();
         o << ' ';

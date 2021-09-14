@@ -560,10 +560,9 @@ enum BrOnOp {
 // Expressions
 //
 // Note that little is provided in terms of constructors for these. The
-// rationale is that writing  new Something(a, b, c, d, e)  is not the clearest,
-// and it would be better to write   new Something(name=a, leftOperand=b...
-// etc., but C++ lacks named operands, so in asm2wasm etc. you will see things
-// like
+// rationale is that writing `new Something(a, b, c, d, e)` is not the clearest,
+// and it would be better to write new `Something(name=a, leftOperand=b...`
+// etc., but C++ lacks named operands so you will see things like
 //   auto x = new Something();
 //   x->name = a;
 //   x->leftOperand = b;
@@ -642,6 +641,7 @@ public:
     StructGetId,
     StructSetId,
     ArrayNewId,
+    ArrayInitId,
     ArrayGetId,
     ArraySetId,
     ArrayLenId,
@@ -1469,6 +1469,16 @@ public:
   void finalize();
 };
 
+class ArrayInit : public SpecificExpression<Expression::ArrayInitId> {
+public:
+  ArrayInit(MixedArena& allocator) : values(allocator) {}
+
+  ExpressionList values;
+  Expression* rtt;
+
+  void finalize();
+};
+
 class ArrayGet : public SpecificExpression<Expression::ArrayGetId> {
 public:
   ArrayGet(MixedArena& allocator) {}
@@ -1823,6 +1833,7 @@ public:
 // The optional "dylink" section is used in dynamic linking.
 class DylinkSection {
 public:
+  bool isLegacy = false;
   Index memorySize, memoryAlignment, tableSize, tableAlignment;
   std::vector<Name> neededDynlibs;
   std::vector<char> tail;
