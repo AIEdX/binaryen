@@ -1424,11 +1424,16 @@ public:
       cast.breaking = ref;
       return cast;
     }
-    Flow rtt = this->visit(curr->rtt);
-    if (rtt.breaking()) {
-      cast.outcome = cast.Break;
-      cast.breaking = rtt;
-      return cast;
+    Literal intendedRtt;
+    if (curr->rtt) {
+      // This is a dynamic check with an rtt.
+      Flow rtt = this->visit(curr->rtt);
+      if (rtt.breaking()) {
+        cast.outcome = cast.Break;
+        cast.breaking = rtt;
+        return cast;
+      }
+      intendedRtt = rtt.getSingleValue();
     }
     cast.originalRef = ref.getSingleValue();
     if (cast.originalRef.isNull()) {
@@ -1443,8 +1448,6 @@ public:
       cast.outcome = cast.Failure;
       return cast;
     }
-    Literal seenRtt;
-    Literal intendedRtt = rtt.getSingleValue();
     if (cast.originalRef.isFunction()) {
       // Function casts are simple in that they have no RTT hierarchies; instead
       // each reference has the canonical RTT for the signature.
@@ -1460,24 +1463,42 @@ public:
         cast.breaking = NONCONSTANT_FLOW;
         return cast;
       }
-      seenRtt = Literal(Type(Rtt(0, func->type)));
-      if (!seenRtt.isSubRtt(intendedRtt)) {
-        cast.outcome = cast.Failure;
-        return cast;
+      if (curr->rtt) {
+        Literal seenRtt = Literal(Type(Rtt(0, func->type)));
+        if (!seenRtt.isSubRtt(intendedRtt)) {
+          cast.outcome = cast.Failure;
+          return cast;
+        }
+        cast.castRef = Literal(
+          func->name, Type(intendedRtt.type.getHeapType(), NonNullable));
+      } else {
+        if (!HeapType::isSubType(func->type, curr->intendedType)) {
+          cast.outcome = cast.Failure;
+          return cast;
+        }
+        cast.castRef =
+          Literal(func->name, Type(curr->intendedType, NonNullable));
       }
-      cast.castRef =
-        Literal(func->name, Type(intendedRtt.type.getHeapType(), NonNullable));
     } else {
       // GC data store an RTT in each instance.
       assert(cast.originalRef.isData());
       auto gcData = cast.originalRef.getGCData();
-      seenRtt = gcData->rtt;
-      if (!seenRtt.isSubRtt(intendedRtt)) {
-        cast.outcome = cast.Failure;
-        return cast;
+      if (curr->rtt) {
+        Literal seenRtt = gcData->rtt;
+        if (!seenRtt.isSubRtt(intendedRtt)) {
+          cast.outcome = cast.Failure;
+          return cast;
+        }
+        cast.castRef =
+          Literal(gcData, Type(intendedRtt.type.getHeapType(), NonNullable));
+      } else {
+        auto seenType = gcData->type;
+        if (!HeapType::isSubType(seenType, curr->intendedType)) {
+          cast.outcome = cast.Failure;
+          return cast;
+        }
+        cast.castRef = Literal(gcData, Type(seenType, NonNullable));
       }
-      cast.castRef =
-        Literal(gcData, Type(intendedRtt.type.getHeapType(), NonNullable));
     }
     cast.outcome = cast.Success;
     return cast;
@@ -1607,13 +1628,42 @@ public:
     }
     return Literal(std::move(newSupers), curr->type);
   }
+
+  // Generates GC data for either dynamic (with an RTT) or static (with a type)
+  // typing. Dynamic typing will provide an rtt expression and an rtt flow with
+  // the value, while static typing only provides a heap type directly.
+  template<typename T>
+  std::shared_ptr<GCData>
+  makeGCData(Expression* rttExpr, Flow& rttFlow, HeapType type, T& data) {
+    if (rttExpr) {
+      return std::make_shared<GCData>(rttFlow.getSingleValue(), data);
+    } else {
+      return std::make_shared<GCData>(type, data);
+    }
+  }
+
   Flow visitStructNew(StructNew* curr) {
     NOTE_ENTER("StructNew");
-    auto rtt = this->visit(curr->rtt);
-    if (rtt.breaking()) {
-      return rtt;
+    Flow rtt;
+    if (curr->rtt) {
+      rtt = this->visit(curr->rtt);
+      if (rtt.breaking()) {
+        return rtt;
+      }
     }
-    const auto& fields = curr->rtt->type.getHeapType().getStruct().fields;
+    if (curr->type == Type::unreachable) {
+      // We cannot proceed to compute the heap type, as there isn't one. Just
+      // find why we are unreachable, and stop there.
+      for (auto* operand : curr->operands) {
+        auto value = this->visit(operand);
+        if (value.breaking()) {
+          return value;
+        }
+      }
+      WASM_UNREACHABLE("unreachable but no unreachable child");
+    }
+    auto heapType = curr->type.getHeapType();
+    const auto& fields = heapType.getStruct().fields;
     Literals data(fields.size());
     for (Index i = 0; i < fields.size(); i++) {
       if (curr->isWithDefault()) {
@@ -1626,8 +1676,8 @@ public:
         data[i] = value.getSingleValue();
       }
     }
-    return Flow(Literal(std::make_shared<GCData>(rtt.getSingleValue(), data),
-                        curr->type));
+    return Flow(
+      Literal(makeGCData(curr->rtt, rtt, heapType, data), curr->type));
   }
   Flow visitStructGet(StructGet* curr) {
     NOTE_ENTER("StructGet");
@@ -1670,15 +1720,26 @@ public:
 
   Flow visitArrayNew(ArrayNew* curr) {
     NOTE_ENTER("ArrayNew");
-    auto rtt = this->visit(curr->rtt);
-    if (rtt.breaking()) {
-      return rtt;
+    Flow rtt;
+    if (curr->rtt) {
+      rtt = this->visit(curr->rtt);
+      if (rtt.breaking()) {
+        return rtt;
+      }
     }
     auto size = this->visit(curr->size);
     if (size.breaking()) {
       return size;
     }
-    const auto& element = curr->rtt->type.getHeapType().getArray().element;
+    if (curr->type == Type::unreachable) {
+      // We cannot proceed to compute the heap type, as there isn't one. Just
+      // visit the unreachable child, and stop there.
+      auto init = this->visit(curr->init);
+      assert(init.breaking());
+      return init;
+    }
+    auto heapType = curr->type.getHeapType();
+    const auto& element = heapType.getArray().element;
     Index num = size.getSingleValue().geti32();
     if (num >= ArrayLimit) {
       hostLimit("allocation failure");
@@ -1699,20 +1760,35 @@ public:
         data[i] = value;
       }
     }
-    return Flow(Literal(std::make_shared<GCData>(rtt.getSingleValue(), data),
-                        curr->type));
+    return Flow(
+      Literal(makeGCData(curr->rtt, rtt, heapType, data), curr->type));
   }
   Flow visitArrayInit(ArrayInit* curr) {
     NOTE_ENTER("ArrayInit");
-    auto rtt = this->visit(curr->rtt);
-    if (rtt.breaking()) {
-      return rtt;
+    Flow rtt;
+    if (curr->rtt) {
+      rtt = this->visit(curr->rtt);
+      if (rtt.breaking()) {
+        return rtt;
+      }
     }
     Index num = curr->values.size();
     if (num >= ArrayLimit) {
       hostLimit("allocation failure");
     }
-    auto field = curr->type.getHeapType().getArray().element;
+    if (curr->type == Type::unreachable) {
+      // We cannot proceed to compute the heap type, as there isn't one. Just
+      // find why we are unreachable, and stop there.
+      for (auto* value : curr->values) {
+        auto result = this->visit(value);
+        if (result.breaking()) {
+          return result;
+        }
+      }
+      WASM_UNREACHABLE("unreachable but no unreachable child");
+    }
+    auto heapType = curr->type.getHeapType();
+    auto field = heapType.getArray().element;
     Literals data(num);
     for (Index i = 0; i < num; i++) {
       auto value = this->visit(curr->values[i]);
@@ -1721,8 +1797,8 @@ public:
       }
       data[i] = truncateForPacking(value.getSingleValue(), field);
     }
-    return Flow(Literal(std::make_shared<GCData>(rtt.getSingleValue(), data),
-                        curr->type));
+    return Flow(
+      Literal(makeGCData(curr->rtt, rtt, heapType, data), curr->type));
   }
   Flow visitArrayGet(ArrayGet* curr) {
     NOTE_ENTER("ArrayGet");
@@ -1851,12 +1927,12 @@ public:
         // We've already checked for a null.
         break;
       case RefAsFunc:
-        if (value.type.isFunction()) {
+        if (!value.type.isFunction()) {
           trap("not a func");
         }
         break;
       case RefAsData:
-        if (value.isData()) {
+        if (!value.isData()) {
           trap("not a data");
         }
         break;

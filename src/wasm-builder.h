@@ -765,10 +765,24 @@ public:
     ret->finalize();
     return ret;
   }
+  RefTest* makeRefTest(Expression* ref, HeapType intendedType) {
+    auto* ret = wasm.allocator.alloc<RefTest>();
+    ret->ref = ref;
+    ret->intendedType = intendedType;
+    ret->finalize();
+    return ret;
+  }
   RefCast* makeRefCast(Expression* ref, Expression* rtt) {
     auto* ret = wasm.allocator.alloc<RefCast>();
     ret->ref = ref;
     ret->rtt = rtt;
+    ret->finalize();
+    return ret;
+  }
+  RefCast* makeRefCast(Expression* ref, HeapType intendedType) {
+    auto* ret = wasm.allocator.alloc<RefCast>();
+    ret->ref = ref;
+    ret->intendedType = intendedType;
     ret->finalize();
     return ret;
   }
@@ -779,6 +793,15 @@ public:
     ret->name = name;
     ret->ref = ref;
     ret->rtt = rtt;
+    ret->finalize();
+    return ret;
+  }
+  BrOn* makeBrOn(BrOnOp op, Name name, Expression* ref, HeapType intendedType) {
+    auto* ret = wasm.allocator.alloc<BrOn>();
+    ret->op = op;
+    ret->name = name;
+    ret->ref = ref;
+    ret->intendedType = intendedType;
     ret->finalize();
     return ret;
   }
@@ -813,6 +836,13 @@ public:
     ret->finalize();
     return ret;
   }
+  template<typename T> StructNew* makeStructNew(HeapType type, const T& args) {
+    auto* ret = wasm.allocator.alloc<StructNew>();
+    ret->operands.set(args);
+    ret->type = Type(type, NonNullable);
+    ret->finalize();
+    return ret;
+  }
   StructGet*
   makeStructGet(Index index, Expression* ref, Type type, bool signed_ = false) {
     auto* ret = wasm.allocator.alloc<StructGet>();
@@ -840,11 +870,28 @@ public:
     ret->finalize();
     return ret;
   }
+  ArrayNew*
+  makeArrayNew(HeapType type, Expression* size, Expression* init = nullptr) {
+    auto* ret = wasm.allocator.alloc<ArrayNew>();
+    ret->size = size;
+    ret->init = init;
+    ret->type = Type(type, NonNullable);
+    ret->finalize();
+    return ret;
+  }
   ArrayInit* makeArrayInit(Expression* rtt,
                            const std::vector<Expression*>& values) {
     auto* ret = wasm.allocator.alloc<ArrayInit>();
     ret->rtt = rtt;
     ret->values.set(values);
+    ret->finalize();
+    return ret;
+  }
+  ArrayInit* makeArrayInit(HeapType type,
+                           const std::vector<Expression*>& values) {
+    auto* ret = wasm.allocator.alloc<ArrayInit>();
+    ret->values.set(values);
+    ret->type = Type(type, NonNullable);
     ret->finalize();
     return ret;
   }
