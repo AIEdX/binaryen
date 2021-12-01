@@ -39,9 +39,14 @@ struct PassRegistry {
   typedef std::function<Pass*()> Creator;
 
   void registerPass(const char* name, const char* description, Creator create);
+  // Register a pass that's used for internal testing. These passes do not show
+  // up in --help.
+  void
+  registerTestPass(const char* name, const char* description, Creator create);
   std::unique_ptr<Pass> createPass(std::string name);
   std::vector<std::string> getRegisteredNames();
   std::string getPassDescription(std::string name);
+  bool isPassHidden(std::string name);
 
 private:
   void registerPasses();
@@ -49,9 +54,10 @@ private:
   struct PassInfo {
     std::string description;
     Creator create;
+    bool hidden;
     PassInfo() = default;
-    PassInfo(std::string description, Creator create)
-      : description(description), create(create) {}
+    PassInfo(std::string description, Creator create, bool hidden = false)
+      : description(description), create(create), hidden(hidden) {}
   };
   std::map<std::string, PassInfo> passInfos;
 };
@@ -391,7 +397,7 @@ protected:
 //
 template<typename WalkerType>
 class WalkerPass : public Pass, public WalkerType {
-  PassRunner* runner;
+  PassRunner* runner = nullptr;
 
 protected:
   typedef WalkerPass<WalkerType> super;
@@ -419,6 +425,12 @@ public:
     setPassRunner(runner);
     WalkerType::setModule(module);
     WalkerType::walkFunction(func);
+  }
+
+  void runOnModuleCode(PassRunner* runner, Module* module) {
+    setPassRunner(runner);
+    WalkerType::setModule(module);
+    WalkerType::walkModuleCode(module);
   }
 
   PassRunner* getPassRunner() { return runner; }

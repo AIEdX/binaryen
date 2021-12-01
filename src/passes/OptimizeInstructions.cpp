@@ -772,16 +772,21 @@ struct OptimizeInstructions
         return replaceCurrent(ret);
       }
     }
-    // bitwise operations
-    // for and and or, we can potentially conditionalize
     if (curr->op == AndInt32 || curr->op == OrInt32) {
-      if (auto* ret = conditionalizeExpensiveOnBitwise(curr)) {
-        return replaceCurrent(ret);
+      if (curr->op == AndInt32) {
+        if (auto* ret = combineAnd(curr)) {
+          return replaceCurrent(ret);
+        }
       }
-    }
-    // for or, we can potentially combine
-    if (curr->op == OrInt32) {
-      if (auto* ret = combineOr(curr)) {
+      // for or, we can potentially combine
+      if (curr->op == OrInt32) {
+        if (auto* ret = combineOr(curr)) {
+          return replaceCurrent(ret);
+        }
+      }
+      // bitwise operations
+      // for and and or, we can potentially conditionalize
+      if (auto* ret = conditionalizeExpensiveOnBitwise(curr)) {
         return replaceCurrent(ret);
       }
     }
@@ -907,6 +912,46 @@ struct OptimizeInstructions
       }
     }
 
+    if (curr->op == ExtendUInt32 || curr->op == ExtendSInt32) {
+      if (auto* load = curr->value->dynCast<Load>()) {
+        // i64.extend_i32_s(i32.load(_8|_16)(_u|_s)(x))  =>
+        //    i64.load(_8|_16|_32)(_u|_s)(x)
+        //
+        // i64.extend_i32_u(i32.load(_8|_16)(_u|_s)(x))  =>
+        //    i64.load(_8|_16|_32)(_u|_s)(x)
+        //
+        // but we can't do this in following cases:
+        //
+        //    i64.extend_i32_u(i32.load8_s(x))
+        //    i64.extend_i32_u(i32.load16_s(x))
+        //
+        // this mixed sign/zero extensions can't represent in single
+        // signed or unsigned 64-bit load operation. For example if `load8_s(x)`
+        // return i8(-1) (0xFF) than sign extended result will be
+        // i32(-1) (0xFFFFFFFF) and with zero extension to i64 we got
+        // finally 0x00000000FFFFFFFF. However with `i64.load8_s` in this
+        // situation we got `i64(-1)` (all ones) and with `i64.load8_u` it
+        // will be 0x00000000000000FF.
+        //
+        // Another limitation is atomics which only have unsigned loads.
+        // So we also avoid this only case:
+        //
+        //   i64.extend_i32_s(i32.atomic.load(x))
+
+        // Special case for i32.load. In this case signedness depends on
+        // extend operation.
+        bool willBeSigned = curr->op == ExtendSInt32 && load->bytes == 4;
+        if (!(curr->op == ExtendUInt32 && load->bytes <= 2 && load->signed_) &&
+            !(willBeSigned && load->isAtomic)) {
+          if (willBeSigned) {
+            load->signed_ = true;
+          }
+          load->type = Type::i64;
+          return replaceCurrent(load);
+        }
+      }
+    }
+
     if (Abstract::hasAnyReinterpret(curr->op)) {
       // i32.reinterpret_f32(f32.reinterpret_i32(x))  =>  x
       // i64.reinterpret_f64(f64.reinterpret_i64(x))  =>  x
@@ -1006,6 +1051,12 @@ struct OptimizeInstructions
     }
   }
 
+  void visitBlock(Block* curr) {
+    if (getModule()->features.hasGC()) {
+      optimizeHeapStores(curr->list);
+    }
+  }
+
   void visitIf(If* curr) {
     curr->condition = optimizeBoolean(curr->condition);
     if (curr->ifFalse) {
@@ -1054,8 +1105,12 @@ struct OptimizeInstructions
     // can't remove or move a ref.as_non_null flowing into a local.set/tee, and
     // (2) even if the local were nullable, if we change things we might prevent
     // the LocalSubtyping pass from turning it into a non-nullable local later.
+    // Note that we must also check if this local is nullable regardless, as a
+    // parameter might be non-nullable even if nullable locals are disallowed
+    // (as that just affects vars, and not params).
     if (auto* as = curr->value->dynCast<RefAs>()) {
-      if (as->op == RefAsNonNull && !getModule()->features.hasGCNNLocals()) {
+      if (as->op == RefAsNonNull && !getModule()->features.hasGCNNLocals() &&
+          getFunction()->getLocalType(curr->index).isNullable()) {
         //   (local.tee (ref.as_non_null ..))
         // =>
         //   (ref.as_non_null (local.tee ..))
@@ -1198,7 +1253,7 @@ struct OptimizeInstructions
                        .makeCallIndirect(get->table,
                                          get->index,
                                          curr->operands,
-                                         get->type.getHeapType().getSignature(),
+                                         get->type.getHeapType(),
                                          curr->isReturn));
       return;
     }
@@ -1315,6 +1370,146 @@ struct OptimizeInstructions
       const auto& fields = curr->ref->type.getHeapType().getStruct().fields;
       optimizeStoredValue(curr->value, fields[curr->index].getByteSize());
     }
+
+    // If our reference is a tee of a struct.new, we may be able to fold the
+    // stored value into the new itself:
+    //
+    //  (struct.set (local.tee $x (struct.new X Y Z)) X')
+    // =>
+    //  (local.set $x (struct.new X' Y Z))
+    //
+    if (auto* tee = curr->ref->dynCast<LocalSet>()) {
+      if (auto* new_ = tee->value->dynCast<StructNew>()) {
+        if (optimizeSubsequentStructSet(new_, curr, tee->index)) {
+          // Success, so we do not need the struct.set any more, and the tee
+          // can just be a set instead of us.
+          tee->makeSet();
+          replaceCurrent(tee);
+        }
+      }
+    }
+  }
+
+  // Similar to the above with struct.set whose reference is a tee of a new, we
+  // can do the same for subsequent sets in a list:
+  //
+  //  (local.set $x (struct.new X Y Z))
+  //  (struct.set (local.get $x) X')
+  // =>
+  //  (local.set $x (struct.new X' Y Z))
+  //
+  // We also handle other struct.sets immediately after this one, but we only
+  // handle the case where they are all in sequence and right after the
+  // local.set (anything in the middle of this pattern will stop us from
+  // optimizing later struct.sets, which might be improved later but would
+  // require an analysis of effects TODO).
+  void optimizeHeapStores(ExpressionList& list) {
+    for (Index i = 0; i < list.size(); i++) {
+      auto* localSet = list[i]->dynCast<LocalSet>();
+      if (!localSet) {
+        continue;
+      }
+      auto* new_ = localSet->value->dynCast<StructNew>();
+      if (!new_) {
+        continue;
+      }
+
+      // This local.set of a struct.new looks good. Find struct.sets after it
+      // to optimize.
+      for (Index j = i + 1; j < list.size(); j++) {
+        auto* structSet = list[j]->dynCast<StructSet>();
+        if (!structSet) {
+          // Any time the pattern no longer matches, stop optimizing possible
+          // struct.sets for this struct.new.
+          break;
+        }
+        auto* localGet = structSet->ref->dynCast<LocalGet>();
+        if (!localGet || localGet->index != localSet->index) {
+          break;
+        }
+        if (!optimizeSubsequentStructSet(new_, structSet, localGet->index)) {
+          break;
+        } else {
+          // Success. Replace the set with a nop, and continue to
+          // perhaps optimize more.
+          ExpressionManipulator::nop(structSet);
+        }
+      }
+    }
+  }
+
+  // Given a struct.new and a struct.set that occurs right after it, and that
+  // applies to the same data, try to apply the set during the new. This can be
+  // either with a nested tee:
+  //
+  //  (struct.set
+  //    (local.tee $x (struct.new X Y Z))
+  //    X'
+  //  )
+  // =>
+  //  (local.set $x (struct.new X' Y Z))
+  //
+  // or without:
+  //
+  //  (local.set $x (struct.new X Y Z))
+  //  (struct.set (local.get $x) X')
+  // =>
+  //  (local.set $x (struct.new X' Y Z))
+  //
+  // Returns true if we succeeded.
+  bool optimizeSubsequentStructSet(StructNew* new_,
+                                   StructSet* set,
+                                   Index refLocalIndex) {
+    // Leave unreachable code for DCE, to avoid updating types here.
+    if (new_->type == Type::unreachable || set->type == Type::unreachable) {
+      return false;
+    }
+
+    if (new_->isWithDefault()) {
+      // Ignore a new_default for now. If the fields are defaultable then we
+      // could add them, in principle, but that might increase code size.
+      return false;
+    }
+
+    auto index = set->index;
+    auto& operands = new_->operands;
+
+    // Check for effects that prevent us moving the struct.set's value (X' in
+    // the function comment) into its new position in the struct.new. First, it
+    // must be ok to move it past the local.set (otherwise, it might read from
+    // memory using that local, and depend on the struct.new having already
+    // occurred; or, if it writes to that local, then it would cross another
+    // write).
+    auto setValueEffects = effects(set->value);
+    if (setValueEffects.localsRead.count(refLocalIndex) ||
+        setValueEffects.localsWritten.count(refLocalIndex)) {
+      return false;
+    }
+
+    // We must move the set's value past indexes greater than it (Y and Z in
+    // the example in the comment on this function).
+    // TODO When this function is called repeatedly in a sequence this can
+    //      become quadratic - perhaps we should memoize (though, struct sizes
+    //      tend to not be ridiculously large).
+    for (Index i = index + 1; i < operands.size(); i++) {
+      auto operandEffects = effects(operands[i]);
+      if (operandEffects.invalidates(setValueEffects)) {
+        // TODO: we could use locals to reorder everything
+        return false;
+      }
+    }
+
+    Builder builder(*getModule());
+
+    // See if we need to keep the old value.
+    if (effects(operands[index]).hasUnremovableSideEffects()) {
+      operands[index] =
+        builder.makeSequence(builder.makeDrop(operands[index]), set->value);
+    } else {
+      operands[index] = set->value;
+    }
+
+    return true;
   }
 
   void visitArrayGet(ArrayGet* curr) { skipNonNullCast(curr->ref); }
@@ -1458,20 +1653,34 @@ struct OptimizeInstructions
         auto childIntendedType = child->getIntendedType();
         if (HeapType::isSubType(intendedType, childIntendedType)) {
           // Skip the child.
-          curr->ref = child->ref;
-          return;
-        } else if (HeapType::isSubType(childIntendedType, intendedType)) {
-          // Skip the parent.
-          replaceCurrent(child);
-          return;
-        } else {
+          if (curr->ref == child) {
+            curr->ref = child->ref;
+            return;
+          } else {
+            // The child is not the direct child of the parent, but it is a
+            // fallthrough value, for example,
+            //
+            //  (ref.cast parent
+            //   (block
+            //    .. other code ..
+            //    (ref.cast child)))
+            //
+            // In this case it isn't obvious that we can remove the child, as
+            // doing so might require updating the types of the things in the
+            // middle - and in fact the sole purpose of the child may be to get
+            // a proper type for validation to work. Do nothing in this case,
+            // and hope that other opts will help here (for example,
+            // trapsNeverHappen will help if the code validates without the
+            // child).
+          }
+        } else if (!canBeCastTo(intendedType, childIntendedType)) {
           // The types are not compatible, so if the input is not null, this
           // will trap.
           if (!curr->type.isNullable()) {
             // Make sure to emit a block with the same type as us; leave
             // updating types for other passes.
             replaceCurrent(builder.makeBlock(
-              {builder.makeDrop(child->ref), builder.makeUnreachable()},
+              {builder.makeDrop(curr->ref), builder.makeUnreachable()},
               curr->type));
             return;
           }
@@ -1682,6 +1891,25 @@ private:
     return true;
   }
 
+  // Check if two consecutive inputs to an instruction are equal and can be
+  // folded into the first of the two. This identifies reads from the same local
+  // variable when one of them is a "tee" operation.
+  // The inputs here must be consecutive, but it is also ok to have code with no
+  // side effects at all in the middle. For example, a Const in between is ok.
+  bool areConsecutiveInputsEqualAndFoldable(Expression* left,
+                                            Expression* right) {
+    if (auto* set = left->dynCast<LocalSet>()) {
+      if (auto* get = right->dynCast<LocalGet>()) {
+        if (set->isTee() && get->index == set->index) {
+          return true;
+        }
+      }
+    }
+    // stronger property than we need - we can not only fold
+    // them but remove them entirely.
+    return areConsecutiveInputsEqualAndRemovable(left, right);
+  }
+
   // Canonicalizing the order of a symmetric binary helps us
   // write more concise pattern matching code elsewhere.
   void canonicalize(Binary* binary) {
@@ -1700,14 +1928,58 @@ private:
     };
     // Prefer a const on the right.
     if (binary->left->is<Const>() && !binary->right->is<Const>()) {
-      return swap();
+      swap();
     }
     if (auto* c = binary->right->dynCast<Const>()) {
-      // x - C  ==>   x + (-C)
+      // x - C   ==>   x + (-C)
       // Prefer use addition if there is a constant on the right.
       if (binary->op == Abstract::getBinary(c->type, Abstract::Sub)) {
         c->value = c->value.neg();
         binary->op = Abstract::getBinary(c->type, Abstract::Add);
+        return;
+      }
+      // Prefer to compare to 0 instead of to -1 or 1.
+      // (signed)x > -1   ==>   x >= 0
+      if (binary->op == Abstract::getBinary(c->type, Abstract::GtS) &&
+          c->value.getInteger() == -1LL) {
+        binary->op = Abstract::getBinary(c->type, Abstract::GeS);
+        c->value = Literal::makeZero(c->type);
+        return;
+      }
+      // (signed)x <= -1   ==>   x < 0
+      if (binary->op == Abstract::getBinary(c->type, Abstract::LeS) &&
+          c->value.getInteger() == -1LL) {
+        binary->op = Abstract::getBinary(c->type, Abstract::LtS);
+        c->value = Literal::makeZero(c->type);
+        return;
+      }
+      // (signed)x < 1   ==>   x <= 0
+      if (binary->op == Abstract::getBinary(c->type, Abstract::LtS) &&
+          c->value.getInteger() == 1LL) {
+        binary->op = Abstract::getBinary(c->type, Abstract::LeS);
+        c->value = Literal::makeZero(c->type);
+        return;
+      }
+      // (signed)x >= 1   ==>   x > 0
+      if (binary->op == Abstract::getBinary(c->type, Abstract::GeS) &&
+          c->value.getInteger() == 1LL) {
+        binary->op = Abstract::getBinary(c->type, Abstract::GtS);
+        c->value = Literal::makeZero(c->type);
+        return;
+      }
+      // (unsigned)x < 1   ==>   x == 0
+      if (binary->op == Abstract::getBinary(c->type, Abstract::LtU) &&
+          c->value.getInteger() == 1LL) {
+        binary->op = Abstract::getBinary(c->type, Abstract::Eq);
+        c->value = Literal::makeZero(c->type);
+        return;
+      }
+      // (unsigned)x >= 1   ==>   x != 0
+      if (binary->op == Abstract::getBinary(c->type, Abstract::GeU) &&
+          c->value.getInteger() == 1LL) {
+        binary->op = Abstract::getBinary(c->type, Abstract::Ne);
+        c->value = Literal::makeZero(c->type);
+        return;
       }
       return;
     }
@@ -1872,6 +2144,44 @@ private:
         s->ifTrue = ifFalse;
         s->ifFalse = ifTrue;
         s->condition = c;
+        return s;
+      }
+    }
+    {
+      // TODO: Remove this after landing SCCP pass. See: #4161
+
+      // i32(x) ? i32(x) : 0  ==>  x
+      Expression *x, *y;
+      if (matches(curr, select(any(&x), i32(0), any(&y))) &&
+          areConsecutiveInputsEqualAndFoldable(x, y)) {
+        return curr->ifTrue;
+      }
+      // i32(x) ? 0 : i32(x)  ==>  { x, 0 }
+      if (matches(curr, select(i32(0), any(&x), any(&y))) &&
+          areConsecutiveInputsEqualAndFoldable(x, y)) {
+        return builder.makeSequence(builder.makeDrop(x), curr->ifTrue);
+      }
+
+      // i64(x) == 0 ? 0 : i64(x)  ==>  x
+      // i64(x) != 0 ? i64(x) : 0  ==>  x
+      if ((matches(curr, select(i64(0), any(&x), unary(EqZInt64, any(&y)))) ||
+           matches(
+             curr,
+             select(any(&x), i64(0), binary(NeInt64, any(&y), i64(0))))) &&
+          areConsecutiveInputsEqualAndFoldable(x, y)) {
+        return curr->condition->is<Unary>() ? curr->ifFalse : curr->ifTrue;
+      }
+
+      // i64(x) == 0 ? i64(x) : 0  ==>  { x, 0 }
+      // i64(x) != 0 ? 0 : i64(x)  ==>  { x, 0 }
+      if ((matches(curr, select(any(&x), i64(0), unary(EqZInt64, any(&y)))) ||
+           matches(
+             curr,
+             select(i64(0), any(&x), binary(NeInt64, any(&y), i64(0))))) &&
+          areConsecutiveInputsEqualAndFoldable(x, y)) {
+        return builder.makeSequence(
+          builder.makeDrop(x),
+          curr->condition->is<Unary>() ? curr->ifFalse : curr->ifTrue);
       }
     }
     {
@@ -2181,12 +2491,37 @@ private:
     }
   }
 
+  // We can combine `and` operations, e.g.
+  //   (x == 0) & (y == 0)   ==>    (x | y) == 0
+  Expression* combineAnd(Binary* curr) {
+    using namespace Abstract;
+    using namespace Match;
+    {
+      // (i32(x) == 0) & (i32(y) == 0)   ==>   i32(x | y) == 0
+      // (i64(x) == 0) & (i64(y) == 0)   ==>   i64(x | y) == 0
+      Expression *x, *y;
+      if (matches(curr,
+                  binary(AndInt32, unary(EqZ, any(&x)), unary(EqZ, any(&y)))) &&
+          x->type == y->type) {
+        auto* inner = curr->left->cast<Unary>();
+        inner->value = Builder(*getModule())
+                         .makeBinary(Abstract::getBinary(x->type, Or), x, y);
+        return inner;
+      }
+    }
+    return nullptr;
+  }
+
   // We can combine `or` operations, e.g.
-  //   (x > y) | (x == y)    ==>    x >= y
-  Expression* combineOr(Binary* binary) {
-    assert(binary->op == OrInt32);
-    if (auto* left = binary->left->dynCast<Binary>()) {
-      if (auto* right = binary->right->dynCast<Binary>()) {
+  //   (x > y)  | (x == y)    ==>    x >= y
+  //   (x != 0) | (y != 0)    ==>    (x | y) != 0
+  Expression* combineOr(Binary* curr) {
+    using namespace Abstract;
+    using namespace Match;
+
+    assert(curr->op == OrInt32);
+    if (auto* left = curr->left->dynCast<Binary>()) {
+      if (auto* right = curr->right->dynCast<Binary>()) {
         if (left->op != right->op &&
             ExpressionAnalyzer::equal(left->left, right->left) &&
             ExpressionAnalyzer::equal(left->right, right->right) &&
@@ -2205,6 +2540,21 @@ private:
             }
           }
         }
+      }
+    }
+    {
+      // (i32(x) != 0) | (i32(y) != 0)   ==>   i32(x | y) != 0
+      // (i64(x) != 0) | (i64(y) != 0)   ==>   i64(x | y) != 0
+      Expression *x, *y;
+      if (matches(curr,
+                  binary(OrInt32,
+                         binary(Ne, any(&x), ival(0)),
+                         binary(Ne, any(&y), ival(0)))) &&
+          x->type == y->type) {
+        auto* inner = curr->left->cast<Binary>();
+        inner->left = Builder(*getModule())
+                        .makeBinary(Abstract::getBinary(x->type, Or), x, y);
+        return inner;
       }
     }
     return nullptr;

@@ -22,6 +22,8 @@
 
 namespace wasm {
 
+namespace StructUtils {
+
 // A vector of a template type's values. One such vector will be used per struct
 // type, where each element in the vector represents a field. We always assume
 // that the vectors are pre-initialized to the right length before accessing any
@@ -57,9 +59,7 @@ struct StructValuesMap : public std::unordered_map<HeapType, StructValues<T>> {
   }
 
   void combineInto(StructValuesMap<T>& combinedInfos) const {
-    for (auto& kv : *this) {
-      auto type = kv.first;
-      auto& info = kv.second;
+    for (auto& [type, info] : *this) {
       for (Index i = 0; i < info.size(); i++) {
         combinedInfos[type][i].combine(info[i]);
       }
@@ -68,9 +68,7 @@ struct StructValuesMap : public std::unordered_map<HeapType, StructValues<T>> {
 
   void dump(std::ostream& o) {
     o << "dump " << this << '\n';
-    for (auto& kv : (*this)) {
-      auto type = kv.first;
-      auto& vec = kv.second;
+    for (auto& [type, vec] : (*this)) {
       o << "dump " << type << " " << &vec << ' ';
       for (auto x : vec) {
         x.dump(o);
@@ -119,17 +117,23 @@ struct FunctionStructValuesMap
 //
 //   void noteCopy(HeapType type, Index index, T& info);
 //
-// We track information from struct.new and struct.set separately, because in
-// struct.new we know more about the type - we know the actual exact type being
-// written to, and not just that it is of a subtype of the instruction's type,
-// which helps later.
+// * Note a read
+//
+//   void noteRead(HeapType type, Index index, T& info);
+//
+// We track information from struct.new and struct.set/struct.get separately,
+// because in struct.new we know more about the type - we know the actual exact
+// type being written to, and not just that it is of a subtype of the
+// instruction's type, which helps later.
 template<typename T, typename SubType>
-struct Scanner : public WalkerPass<PostWalker<Scanner<T, SubType>>> {
+struct StructScanner
+  : public WalkerPass<PostWalker<StructScanner<T, SubType>>> {
   bool isFunctionParallel() override { return true; }
 
-  Scanner(FunctionStructValuesMap<T>& functionNewInfos,
-          FunctionStructValuesMap<T>& functionSetInfos)
-    : functionNewInfos(functionNewInfos), functionSetInfos(functionSetInfos) {}
+  StructScanner(FunctionStructValuesMap<T>& functionNewInfos,
+                FunctionStructValuesMap<T>& functionSetGetInfos)
+    : functionNewInfos(functionNewInfos),
+      functionSetGetInfos(functionSetGetInfos) {}
 
   void visitStructNew(StructNew* curr) {
     auto type = curr->type;
@@ -158,11 +162,25 @@ struct Scanner : public WalkerPass<PostWalker<Scanner<T, SubType>>> {
     }
 
     // Note a write to this field of the struct.
-    noteExpressionOrCopy(
-      curr->value,
-      type.getHeapType(),
-      curr->index,
-      functionSetInfos[this->getFunction()][type.getHeapType()][curr->index]);
+    noteExpressionOrCopy(curr->value,
+                         type.getHeapType(),
+                         curr->index,
+                         functionSetGetInfos[this->getFunction()]
+                                            [type.getHeapType()][curr->index]);
+  }
+
+  void visitStructGet(StructGet* curr) {
+    auto type = curr->ref->type;
+    if (type == Type::unreachable) {
+      return;
+    }
+
+    auto heapType = type.getHeapType();
+    auto index = curr->index;
+    static_cast<SubType*>(this)->noteRead(
+      heapType,
+      index,
+      functionSetGetInfos[this->getFunction()][heapType][index]);
   }
 
   void
@@ -186,7 +204,7 @@ struct Scanner : public WalkerPass<PostWalker<Scanner<T, SubType>>> {
   }
 
   FunctionStructValuesMap<T>& functionNewInfos;
-  FunctionStructValuesMap<T>& functionSetInfos;
+  FunctionStructValuesMap<T>& functionSetGetInfos;
 };
 
 // Helper class to propagate information about fields to sub- and/or super-
@@ -213,8 +231,7 @@ public:
 private:
   void propagate(StructValuesMap<T>& combinedInfos, bool toSubTypes) {
     UniqueDeferredQueue<HeapType> work;
-    for (auto& kv : combinedInfos) {
-      auto type = kv.first;
+    for (auto& [type, _] : combinedInfos) {
       work.push(type);
     }
     while (!work.empty()) {
@@ -222,13 +239,12 @@ private:
       auto& infos = combinedInfos[type];
 
       // Propagate shared fields to the supertype.
-      HeapType superType;
-      if (type.getSuperType(superType)) {
-        auto& superInfos = combinedInfos[superType];
-        auto& superFields = superType.getStruct().fields;
+      if (auto superType = type.getSuperType()) {
+        auto& superInfos = combinedInfos[*superType];
+        auto& superFields = superType->getStruct().fields;
         for (Index i = 0; i < superFields.size(); i++) {
           if (superInfos[i].combine(infos[i])) {
-            work.push(superType);
+            work.push(*superType);
           }
         }
       }
@@ -248,6 +264,8 @@ private:
     }
   }
 };
+
+} // namespace StructUtils
 
 } // namespace wasm
 

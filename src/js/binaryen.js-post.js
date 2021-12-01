@@ -91,6 +91,10 @@ function initializeConstants() {
     'RefIs',
     'RefFunc',
     'RefEq',
+    'TableGet',
+    'TableSet',
+    'TableSize',
+    'TableGrow',
     'Try',
     'Throw',
     'Rethrow',
@@ -549,6 +553,8 @@ function initializeConstants() {
     'WritesGlobal',
     'ReadsMemory',
     'WritesMemory',
+    'ReadsTable',
+    'WritesTable',
     'ImplicitTrap',
     'IsAtomic',
     'Throws',
@@ -658,6 +664,21 @@ function wrapModule(module, self = {}) {
     },
     'set'(name, value) {
       return Module['_BinaryenGlobalSet'](module, strToStack(name), value);
+    }
+  }
+
+  self['table'] = {
+    'get'(name, index, type) {
+      return Module['_BinaryenTableGet'](module, strToStack(name), index, type);
+    },
+    'set'(name, index, value) {
+      return Module['_BinaryenTableSet'](module, strToStack(name), index, value);
+    },
+    'size'(name) {
+      return Module['_BinaryenTableSize'](module, strToStack(name));
+    },
+    'grow'(name, value, delta) {
+      return Module['_BinaryenTableGrow'](module, strToStack(name), value, delta);
     }
   }
 
@@ -2797,6 +2818,35 @@ Module['getExpressionInfo'] = function(expr) {
         'name': UTF8ToString(Module['_BinaryenGlobalSetGetName'](expr)),
         'value': Module['_BinaryenGlobalSetGetValue'](expr)
       };
+    case Module['TableGetId']:
+      return {
+        'id': id,
+        'type': type,
+        'table': UTF8ToString(Module['_BinaryenTableGetGetTable'](expr)),
+        'index': Module['_BinaryenTableGetGetIndex'](expr)
+      };
+    case Module['TableSetId']:
+      return {
+        'id': id,
+        'type': type,
+        'table': UTF8ToString(Module['_BinaryenTableSetGetTable'](expr)),
+        'index': Module['_BinaryenTableSetGetIndex'](expr),
+        'value': Module['_BinaryenTableSetGetValue'](expr)
+      };
+    case Module['TableSizeId']:
+      return {
+        'id': id,
+        'type': type,
+        'table': UTF8ToString(Module['_BinaryenTableSizeGetTable'](expr)),
+      };
+    case Module['TableGrowId']:
+      return {
+        'id': id,
+        'type': type,
+        'table': UTF8ToString(Module['_BinaryenTableGrowGetTable'](expr)),
+        'value': Module['_BinaryenTableGrowGetValue'](expr),
+        'delta': Module['_BinaryenTableGrowGetDelta'](expr),
+      };
     case Module['LoadId']:
       return {
         'id': id,
@@ -3131,7 +3181,9 @@ Module['getExpressionInfo'] = function(expr) {
 
 // Gets the side effects of the specified expression
 Module['getSideEffects'] = function(expr, module) {
-  return Module['_BinaryenExpressionGetSideEffects'](expr, module);
+  assert(module); // guard against incorrect old API usage: a module must be
+                  // provided here.
+  return Module['_BinaryenExpressionGetSideEffects'](expr, module['ptr']);
 };
 
 Module['createType'] = function(types) {
@@ -3764,6 +3816,72 @@ Module['GlobalSet'] = makeExpressionWrapper({
   },
   'setValue'(expr, valueExpr) {
     Module['_BinaryenGlobalSetSetValue'](expr, valueExpr);
+  }
+});
+
+Module['TableGet'] = makeExpressionWrapper({
+  'getTable'(expr) {
+    return UTF8ToString(Module['_BinaryenTableGetGetTable'](expr));
+  },
+  'setTable'(expr, name) {
+    preserveStack(() => { Module['_BinaryenTableGetSetTable'](expr, strToStack(name)) });
+  },
+  'getIndex'(expr) {
+    return Module['_BinaryenTableGetGetIndex'](expr);
+  },
+  'setIndex'(expr, indexExpr) {
+    Module['_BinaryenTableGetSetIndex'](expr, indexExpr);
+  }
+});
+
+Module['TableSet'] = makeExpressionWrapper({
+  'getTable'(expr) {
+    return UTF8ToString(Module['_BinaryenTableSetGetTable'](expr));
+  },
+  'setTable'(expr, name) {
+    preserveStack(() => { Module['_BinaryenTableSetSetTable'](expr, strToStack(name)) });
+  },
+  'getIndex'(expr) {
+    return Module['_BinaryenTableSetGetIndex'](expr);
+  },
+  'setIndex'(expr, indexExpr) {
+    Module['_BinaryenTableSetSetIndex'](expr, indexExpr);
+  },
+  'getValue'(expr) {
+    return Module['_BinaryenTableSetGetValue'](expr);
+  },
+  'setValue'(expr, valueExpr) {
+    Module['_BinaryenTableSetSetValue'](expr, valueExpr);
+  }
+});
+
+Module['TableSize'] = makeExpressionWrapper({
+  'getTable'(expr) {
+    return UTF8ToString(Module['_BinaryenTableSizeGetTable'](expr));
+  },
+  'setTable'(expr, name) {
+    preserveStack(() => { Module['_BinaryenTableSizeSetTable'](expr, strToStack(name)) });
+  },
+});
+
+Module['TableGrow'] = makeExpressionWrapper({
+  'getTable'(expr) {
+    return UTF8ToString(Module['_BinaryenTableGrowGetTable'](expr));
+  },
+  'setTable'(expr, name) {
+    preserveStack(() => { Module['_BinaryenTableGrowSetTable'](expr, strToStack(name)) });
+  },
+  'getValue'(expr) {
+    return Module['_BinaryenTableGrowGetValue'](expr);
+  },
+  'setValue'(expr, valueExpr) {
+    Module['_BinaryenTableGrowSetValue'](expr, valueExpr);
+  },
+  'getDelta'(expr) {
+    return Module['_BinaryenTableGrowGetDelta'](expr);
+  },
+  'setDelta'(expr, deltaExpr) {
+    Module['_BinaryenTableGrowSetDelta'](expr, deltaExpr);
   }
 });
 
@@ -4691,46 +4809,12 @@ Module['exit'] = function(status) {
   if (status != 0) throw new Error('exiting due to error: ' + status);
 };
 
-// Indicates if Binaryen has been loaded and is ready
-Module['isReady'] = runtimeInitialized;
-
-// Provide a mechanism to tell when the module is ready
-//
-// if (!binaryen.isReady) await binaryen.ready;
-// ...
-//
-let pendingPromises = [];
-let initializeError = null;
-
-Object.defineProperty(Module, 'ready', {
-  get() {
-    return new Promise((resolve, reject) => {
-      if (initializeError) {
-        reject(initializeError);
-      } else if (runtimeInitialized) {
-        resolve(Module);
-      } else {
-        pendingPromises.push({ resolve, reject });
-      }
-    });
-  }
-});
-
 // Intercept the onRuntimeInitialized hook if necessary
 if (runtimeInitialized) {
   initializeConstants();
 } else {
   Module['onRuntimeInitialized'] = (super_ => () => {
-    try {
-      initializeConstants();
-      if (super_) super_();
-      Module['isReady'] = true;
-      pendingPromises.forEach(p => { p.resolve(Module) });
-    } catch (e) {
-      initializeError = e;
-      pendingPromises.forEach(p => { p.reject(e) });
-    } finally {
-      pendingPromises = [];
-    }
+    initializeConstants();
+    if (super_) super_();
   })(Module['onRuntimeInitialized']);
 }

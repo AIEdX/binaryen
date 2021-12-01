@@ -25,6 +25,7 @@
 //  * Apply the constant values of previous global.sets, in a linear
 //    execution trace.
 //  * Remove writes to globals that are never read from.
+//  * Remove writes to globals that are always assigned the same value.
 //  * Remove writes to globals that are only read from in order to write (see
 //    below, "readOnlyToWrite").
 //
@@ -60,6 +61,9 @@ struct GlobalInfo {
   std::atomic<Index> written{0};
   std::atomic<Index> read{0};
 
+  // Whether the global is written a value different from its initial value.
+  std::atomic<bool> nonInitWritten{false};
+
   // How many times the global is "read, but only to write", that is, is used in
   // this pattern:
   //
@@ -93,7 +97,20 @@ struct GlobalUseScanner : public WalkerPass<PostWalker<GlobalUseScanner>> {
 
   GlobalUseScanner* create() override { return new GlobalUseScanner(infos); }
 
-  void visitGlobalSet(GlobalSet* curr) { (*infos)[curr->name].written++; }
+  void visitGlobalSet(GlobalSet* curr) {
+    (*infos)[curr->name].written++;
+
+    // Check if there is a write of a value that may differ from the initial
+    // one. If there is anything but identical constants in both the initial
+    // value and the written value then we must assume that.
+    auto* global = getModule()->getGlobal(curr->name);
+    if (global->imported() || !Properties::isConstantExpression(curr->value) ||
+        !Properties::isConstantExpression(global->init) ||
+        Properties::getLiterals(curr->value) !=
+          Properties::getLiterals(global->init)) {
+      (*infos)[curr->name].nonInitWritten = true;
+    }
+  }
 
   void visitGlobalGet(GlobalGet* curr) { (*infos)[curr->name].read++; }
 
@@ -107,36 +124,94 @@ struct GlobalUseScanner : public WalkerPass<PostWalker<GlobalUseScanner>> {
       return;
     }
 
-    // See if reading a specific global is the only effect the condition has.
-    EffectAnalyzer condition(getPassOptions(), *getModule(), curr->condition);
+    auto global =
+      firstOnlyReadsGlobalWhichSecondOnlyWrites(curr->condition, curr->ifTrue);
+    if (global.is()) {
+      // This is exactly the pattern we sought!
+      (*infos)[global].readOnlyToWrite++;
+    }
+  }
 
-    if (condition.globalsRead.size() != 1) {
-      return;
+  // Checks if the first expression only reads a certain global, and has no
+  // other effects, and the second only writes that same global, and also has no
+  // other effects. Returns the global name if so, or a null name otherwise.
+  Name firstOnlyReadsGlobalWhichSecondOnlyWrites(Expression* first,
+                                                 Expression* second) {
+    // See if reading a specific global is the only effect the first has.
+    EffectAnalyzer firstEffects(getPassOptions(), *getModule(), first);
+
+    if (firstEffects.immutableGlobalsRead.size() +
+          firstEffects.mutableGlobalsRead.size() !=
+        1) {
+      return Name();
     }
-    auto global = *condition.globalsRead.begin();
-    condition.globalsRead.clear();
-    if (condition.hasAnything()) {
-      return;
+    Name global;
+    if (firstEffects.immutableGlobalsRead.size() == 1) {
+      global = *firstEffects.immutableGlobalsRead.begin();
+      firstEffects.immutableGlobalsRead.clear();
+    } else {
+      global = *firstEffects.mutableGlobalsRead.begin();
+      firstEffects.mutableGlobalsRead.clear();
+    }
+    if (firstEffects.hasAnything()) {
+      return Name();
     }
 
-    // See if writing the same global is the only effect the body has. (Note
-    // that we don't need to care about the case where the body has no effects
-    // at all - other pass would handle that trivial situation.)
-    EffectAnalyzer ifTrue(getPassOptions(), *getModule(), curr->ifTrue);
-    if (ifTrue.globalsWritten.size() != 1) {
-      return;
+    // See if writing the same global is the only effect the second has. (Note
+    // that we don't need to care about the case where the second has no effects
+    // at all - other passes would handle that trivial situation.)
+    EffectAnalyzer secondEffects(getPassOptions(), *getModule(), second);
+    if (secondEffects.globalsWritten.size() != 1) {
+      return Name();
     }
-    auto writtenGlobal = *ifTrue.globalsWritten.begin();
+    auto writtenGlobal = *secondEffects.globalsWritten.begin();
     if (writtenGlobal != global) {
-      return;
+      return Name();
     }
-    ifTrue.globalsWritten.clear();
-    if (ifTrue.hasAnything()) {
+    secondEffects.globalsWritten.clear();
+    if (secondEffects.hasAnything()) {
+      return Name();
+    }
+
+    return global;
+  }
+
+  void visitFunction(Function* curr) {
+    // We are looking for a function body like this:
+    //
+    //   if (global == X) return;
+    //   global = Y;
+    //
+    // And nothing else at all. Note that this does not overlap with the if
+    // pattern above (the assignment is in the if body) so we will never have
+    // overlapping matchings (which would each count as 1, leading to a
+    // miscount).
+
+    if (curr->body->type != Type::none) {
       return;
     }
 
-    // This is exactly the pattern we sought!
-    (*infos)[global].readOnlyToWrite++;
+    auto* block = curr->body->dynCast<Block>();
+    if (!block) {
+      return;
+    }
+
+    auto& list = block->list;
+    if (list.size() != 2) {
+      return;
+    }
+
+    auto* iff = list[0]->dynCast<If>();
+    if (!iff || iff->ifFalse || !iff->ifTrue->is<Return>()) {
+      return;
+    }
+
+    auto global =
+      firstOnlyReadsGlobalWhichSecondOnlyWrites(iff->condition, list[1]);
+    if (global.is()) {
+      // This is exactly the pattern we sought!
+      (*infos)[global].readOnlyToWrite++;
+    }
   }
 
 private:
@@ -336,10 +411,11 @@ struct SimplifyGlobals : public Pass {
   bool removeUnneededWrites() {
     bool more = false;
 
-    // Globals that are not exports and not read from are unnecessary (even if
-    // they are written to). Likewise, globals that are only read from in order
-    // to write to themselves are unnecessary. First, find such globals.
-    NameSet unnecessaryGlobals;
+    // Globals that are not exports and not read from do not need their sets.
+    // Likewise, globals that only write their initial value later also do not
+    // need those writes. And, globals that are only read from in order to write
+    // to themselves as well. First, find such globals.
+    NameSet globalsNotNeedingSets;
     for (auto& global : module->globals) {
       auto& info = map[global->name];
 
@@ -373,15 +449,15 @@ struct SimplifyGlobals : public Pass {
       // our logic is wrong somewhere.
       assert(info.written >= info.readOnlyToWrite);
 
-      if (!info.read || onlyReadOnlyToWrite) {
-        unnecessaryGlobals.insert(global->name);
+      if (!info.read || !info.nonInitWritten || onlyReadOnlyToWrite) {
+        globalsNotNeedingSets.insert(global->name);
 
         // We can now mark this global as immutable, and un-written, since we
-        // are about to remove all the operations on it.
+        // are about to remove all the sets on it.
         global->mutable_ = false;
         info.written = 0;
 
-        // Nested old-read-to-write expressions require another full iteration
+        // Nested only-read-to-write expressions require another full iteration
         // to optimize, as we have:
         //
         //   if (a) {
@@ -394,6 +470,10 @@ struct SimplifyGlobals : public Pass {
         // The first iteration can only optimize b, as the outer if's body has
         // more effects than we understand. After finishing the first iteration,
         // b will no longer exist, removing those effects.
+        //
+        // TODO: In principle other situations exist as well where more
+        //       iterations help, like if we remove a set that turns something
+        //       into a read-only-to-write.
         if (onlyReadOnlyToWrite) {
           more = true;
         }
@@ -404,7 +484,7 @@ struct SimplifyGlobals : public Pass {
     // then see that since the global has no writes, it is a constant, which
     // will lead to removal of gets, and after removing them, the global itself
     // will be removed as well.
-    GlobalSetRemover(&unnecessaryGlobals, optimize).run(runner, module);
+    GlobalSetRemover(&globalsNotNeedingSets, optimize).run(runner, module);
 
     return more;
   }

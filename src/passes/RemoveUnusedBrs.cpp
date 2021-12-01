@@ -80,7 +80,10 @@ static bool canTurnIfIntoBrIf(Expression* ifCondition,
   return !EffectAnalyzer(options, wasm, ifCondition).invalidates(value);
 }
 
-const Index TooCostlyToRunUnconditionally = 7;
+// This leads to similar choices as LLVM does.
+// See https://github.com/WebAssembly/binaryen/pull/4228
+// It can be tuned more later.
+const Index TooCostlyToRunUnconditionally = 9;
 
 // Check if it is not worth it to run code unconditionally. This
 // assumes we are trying to run two expressions where previously
@@ -691,8 +694,13 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
       bool worked = false;
 
       void visitBrOn(BrOn* curr) {
-        // Ignore unreachable BrOns which we cannot improve anyhow.
-        if (curr->type == Type::unreachable) {
+        // Ignore unreachable BrOns which we cannot improve anyhow. Note that
+        // we must check the ref field manually, as we may be changing types as
+        // we go here. (Another option would be to use a TypeUpdater here
+        // instead of calling ReFinalize at the very end, but that would be more
+        // complex and slower.)
+        if (curr->type == Type::unreachable ||
+            curr->ref->type == Type::unreachable) {
           return;
         }
 

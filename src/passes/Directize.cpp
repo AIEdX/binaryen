@@ -69,6 +69,11 @@ struct FunctionDirectizer : public WalkerPass<PostWalker<FunctionDirectizer>> {
         auto* func = getFunction();
         std::vector<Expression*> blockContents;
 
+        if (select->condition->type == Type::unreachable) {
+          // Leave this for DCE.
+          return;
+        }
+
         // We must use the operands twice, and also must move the condition to
         // execute first; use locals for them all. While doing so, if we see
         // any are unreachable, stop trying to optimize and leave this for DCE.
@@ -78,13 +83,16 @@ struct FunctionDirectizer : public WalkerPass<PostWalker<FunctionDirectizer>> {
               !TypeUpdating::canHandleAsLocal(operand->type)) {
             return;
           }
+        }
+
+        // None of the types are a problem, so we can proceed to add new vars as
+        // needed and perform this optimization.
+        for (auto* operand : curr->operands) {
           auto currLocal = builder.addVar(func, operand->type);
           operandLocals.push_back(currLocal);
           blockContents.push_back(builder.makeLocalSet(currLocal, operand));
-        }
-
-        if (select->condition->type == Type::unreachable) {
-          return;
+          // By adding locals we must make type adjustments at the end.
+          changedTypes = true;
         }
 
         // Build the calls.
@@ -106,9 +114,6 @@ struct FunctionDirectizer : public WalkerPass<PostWalker<FunctionDirectizer>> {
         auto* iff = builder.makeIf(select->condition, ifTrueCall, ifFalseCall);
         blockContents.push_back(iff);
         replaceCurrent(builder.makeBlock(blockContents));
-
-        // By adding locals we must make type adjustments at the end.
-        changedTypes = true;
       }
     }
   }
@@ -148,7 +153,7 @@ private:
       return replaceWithUnreachable(operands);
     }
     auto* func = getModule()->getFunction(name);
-    if (original->sig != func->getSig()) {
+    if (original->heapType != func->type) {
       return replaceWithUnreachable(operands);
     }
 
@@ -173,33 +178,63 @@ private:
 
 struct Directize : public Pass {
   void run(PassRunner* runner, Module* module) override {
-    std::unordered_map<Name, TableUtils::FlatTable> validTables;
+    // Find which tables are valid to optimize on. They must not be imported nor
+    // exported (so the outside cannot modify them), and must have no sets in
+    // any part of the module.
 
-    for (auto& table : module->tables) {
-      if (!table->imported()) {
-        bool canOptimizeCallIndirect = true;
+    // First, find which tables have sets.
+    using TablesWithSet = std::unordered_set<Name>;
 
-        for (auto& ex : module->exports) {
-          if (ex->kind == ExternalKind::Table && ex->value == table->name) {
-            canOptimizeCallIndirect = false;
-          }
+    ModuleUtils::ParallelFunctionAnalysis<TablesWithSet> analysis(
+      *module, [&](Function* func, TablesWithSet& tablesWithSet) {
+        if (func->imported()) {
+          return;
         }
-
-        if (canOptimizeCallIndirect) {
-          TableUtils::FlatTable flatTable(*module, *table);
-          if (flatTable.valid) {
-            validTables.emplace(table->name, flatTable);
-          }
+        for (auto* set : FindAll<TableSet>(func->body).list) {
+          tablesWithSet.insert(set->table);
         }
+      });
+
+    TablesWithSet tablesWithSet;
+    for (auto& [_, names] : analysis.map) {
+      for (auto name : names) {
+        tablesWithSet.insert(name);
       }
     }
 
-    // Without typed function references, all we can do is optimize table
-    // accesses, so if we can't do that, stop.
-    if (validTables.empty() && !module->features.hasTypedFunctionReferences()) {
+    std::unordered_map<Name, TableUtils::FlatTable> validTables;
+
+    for (auto& table : module->tables) {
+      if (table->imported()) {
+        continue;
+      }
+
+      if (tablesWithSet.count(table->name)) {
+        continue;
+      }
+
+      bool canOptimizeCallIndirect = true;
+      for (auto& ex : module->exports) {
+        if (ex->kind == ExternalKind::Table && ex->value == table->name) {
+          canOptimizeCallIndirect = false;
+          break;
+        }
+      }
+      if (!canOptimizeCallIndirect) {
+        continue;
+      }
+
+      // All conditions are valid, this is optimizable.
+      TableUtils::FlatTable flatTable(*module, *table);
+      if (flatTable.valid) {
+        validTables.emplace(table->name, flatTable);
+      }
+    }
+
+    if (validTables.empty()) {
       return;
     }
-    // The table exists and is constant, so this is possible.
+
     FunctionDirectizer(validTables).run(runner, module);
   }
 };

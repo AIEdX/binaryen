@@ -10,9 +10,9 @@
 
 (module
   ;; CHECK:      (type $struct.A (struct (field i32)))
-  ;; NOMNL:      (type $struct.A (struct (field i32)))
+  ;; NOMNL:      (type $struct.A (struct_subtype (field i32) data))
   (type $struct.A (struct i32))
-  ;; NOMNL:      (type $struct.B (struct (field i32)))
+  ;; NOMNL:      (type $struct.B (struct_subtype (field i32) data))
   (type $struct.B (struct i32))
   ;; CHECK:      (func $test
   ;; CHECK-NEXT:  (drop
@@ -21,7 +21,7 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  ;; NOMNL:      (func $test
+  ;; NOMNL:      (func $test (type $none_=>_none)
   ;; NOMNL-NEXT:  (drop
   ;; NOMNL-NEXT:   (ref.test_static $struct.B
   ;; NOMNL-NEXT:    (ref.null $struct.A)
@@ -37,9 +37,9 @@
 
 (module
   ;; CHECK:      (type $struct.A (struct (field i32)))
-  ;; NOMNL:      (type $struct.A (struct (field i32)))
+  ;; NOMNL:      (type $struct.A (struct_subtype (field i32) data))
   (type $struct.A (struct i32))
-  ;; NOMNL:      (type $struct.B (struct (field i32)))
+  ;; NOMNL:      (type $struct.B (struct_subtype (field i32) data))
   (type $struct.B (struct i32))
   ;; CHECK:      (func $test
   ;; CHECK-NEXT:  (drop
@@ -48,7 +48,7 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  ;; NOMNL:      (func $test
+  ;; NOMNL:      (func $test (type $none_=>_none)
   ;; NOMNL-NEXT:  (drop
   ;; NOMNL-NEXT:   (ref.cast_static $struct.B
   ;; NOMNL-NEXT:    (ref.null $struct.A)
@@ -64,14 +64,14 @@
 
 (module
   ;; CHECK:      (type $struct.A (struct (field i32)))
-  ;; NOMNL:      (type $struct.A (struct (field i32)))
+  ;; NOMNL:      (type $struct.A (struct_subtype (field i32) data))
   (type $struct.A (struct i32))
   ;; CHECK:      (func $test
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (struct.new_default $struct.A)
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  ;; NOMNL:      (func $test
+  ;; NOMNL:      (func $test (type $none_=>_none)
   ;; NOMNL-NEXT:  (drop
   ;; NOMNL-NEXT:   (struct.new_default $struct.A)
   ;; NOMNL-NEXT:  )
@@ -85,7 +85,7 @@
 
 (module
   ;; CHECK:      (type $vector (array (mut f64)))
-  ;; NOMNL:      (type $vector (array (mut f64)))
+  ;; NOMNL:      (type $vector (array_subtype (mut f64) data))
   (type $vector (array (mut f64)))
   ;; CHECK:      (func $test
   ;; CHECK-NEXT:  (drop
@@ -95,7 +95,7 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  ;; NOMNL:      (func $test
+  ;; NOMNL:      (func $test (type $none_=>_none)
   ;; NOMNL-NEXT:  (drop
   ;; NOMNL-NEXT:   (array.new $vector
   ;; NOMNL-NEXT:    (f64.const 3.14159)
@@ -115,7 +115,7 @@
 
 (module
   ;; CHECK:      (type $vector (array (mut f64)))
-  ;; NOMNL:      (type $vector (array (mut f64)))
+  ;; NOMNL:      (type $vector (array_subtype (mut f64) data))
   (type $vector (array (mut f64)))
   ;; CHECK:      (func $test
   ;; CHECK-NEXT:  (drop
@@ -127,7 +127,7 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  ;; NOMNL:      (func $test
+  ;; NOMNL:      (func $test (type $none_=>_none)
   ;; NOMNL-NEXT:  (drop
   ;; NOMNL-NEXT:   (array.init_static $vector
   ;; NOMNL-NEXT:    (f64.const 1)

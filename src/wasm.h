@@ -48,8 +48,8 @@ struct Address {
   typedef uint32_t address32_t;
   typedef uint64_t address64_t;
   address64_t addr;
-  Address() : addr(0) {}
-  Address(uint64_t a) : addr(a) {}
+  constexpr Address() : addr(0) {}
+  constexpr Address(uint64_t a) : addr(a) {}
   Address& operator=(uint64_t a) {
     addr = a;
     return *this;
@@ -218,6 +218,12 @@ enum UnaryOp {
   TruncSatZeroUVecF64x2ToVecI32x4,
   DemoteZeroVecF64x2ToVecF32x4,
   PromoteLowVecF32x4ToVecF64x2,
+
+  // Relaxed SIMD
+  RelaxedTruncSVecF32x4ToVecI32x4,
+  RelaxedTruncUVecF32x4ToVecI32x4,
+  RelaxedTruncZeroSVecF64x2ToVecI32x4,
+  RelaxedTruncZeroUVecF64x2ToVecI32x4,
 
   InvalidUnary
 };
@@ -459,6 +465,13 @@ enum BinaryOp {
   // SIMD Swizzle
   SwizzleVec8x16,
 
+  // Relaxed SIMD
+  RelaxedSwizzleVec8x16,
+  RelaxedMinVecF32x4,
+  RelaxedMaxVecF32x4,
+  RelaxedMinVecF64x2,
+  RelaxedMaxVecF64x2,
+
   InvalidBinary
 };
 
@@ -527,6 +540,16 @@ enum SIMDLoadStoreLaneOp {
 
 enum SIMDTernaryOp {
   Bitselect,
+
+  // Relaxed SIMD
+  RelaxedFmaVecF32x4,
+  RelaxedFmsVecF32x4,
+  RelaxedFmaVecF64x2,
+  RelaxedFmsVecF64x2,
+  LaneselectI8x16,
+  LaneselectI16x8,
+  LaneselectI32x4,
+  LaneselectI64x2,
 };
 
 enum RefIsOp {
@@ -625,6 +648,9 @@ public:
     RefFuncId,
     RefEqId,
     TableGetId,
+    TableSetId,
+    TableSizeId,
+    TableGrowId,
     TryId,
     ThrowId,
     RethrowId,
@@ -820,7 +846,7 @@ public:
 class CallIndirect : public SpecificExpression<Expression::CallIndirectId> {
 public:
   CallIndirect(MixedArena& allocator) : operands(allocator) {}
-  Signature sig;
+  HeapType heapType;
   ExpressionList operands;
   Expression* target;
   Name table;
@@ -1272,6 +1298,40 @@ public:
   Name table;
 
   Expression* index;
+
+  void finalize();
+};
+
+class TableSet : public SpecificExpression<Expression::TableSetId> {
+public:
+  TableSet(MixedArena& allocator) {}
+
+  Name table;
+
+  Expression* index;
+  Expression* value;
+
+  void finalize();
+};
+
+class TableSize : public SpecificExpression<Expression::TableSizeId> {
+public:
+  TableSize() { type = Type::i32; }
+  TableSize(MixedArena& allocator) : TableSize() {}
+
+  Name table;
+
+  void finalize();
+};
+
+class TableGrow : public SpecificExpression<Expression::TableGrowId> {
+public:
+  TableGrow() { type = Type::i32; }
+  TableGrow(MixedArena& allocator) : TableGrow() {}
+
+  Name table;
+  Expression* value;
+  Expression* delta;
 
   void finalize();
 };

@@ -435,7 +435,9 @@ struct PrintExpressionContents
 
     o << '(';
     printMinor(o, "type ");
-    TypeNamePrinter(o, wasm).print(HeapType(curr->sig));
+
+    TypeNamePrinter(o, wasm).print(curr->heapType);
+
     o << ')';
   }
   void visitLocalGet(LocalGet* curr) {
@@ -656,6 +658,30 @@ struct PrintExpressionContents
     switch (curr->op) {
       case Bitselect:
         o << "v128.bitselect";
+        break;
+      case LaneselectI8x16:
+        o << "i8x16.laneselect";
+        break;
+      case LaneselectI16x8:
+        o << "i16x8.laneselect";
+        break;
+      case LaneselectI32x4:
+        o << "i32x4.laneselect";
+        break;
+      case LaneselectI64x2:
+        o << "i64x2.laneselect";
+        break;
+      case RelaxedFmaVecF32x4:
+        o << "f32x4.relaxed_fma";
+        break;
+      case RelaxedFmsVecF32x4:
+        o << "f32x4.relaxed_fms";
+        break;
+      case RelaxedFmaVecF64x2:
+        o << "f64x2.relaxed_fma";
+        break;
+      case RelaxedFmsVecF64x2:
+        o << "f64x2.relaxed_fms";
         break;
     }
     restoreNormalColor(o);
@@ -1189,6 +1215,18 @@ struct PrintExpressionContents
         break;
       case PromoteLowVecF32x4ToVecF64x2:
         o << "f64x2.promote_low_f32x4";
+        break;
+      case RelaxedTruncSVecF32x4ToVecI32x4:
+        o << "i32x4.relaxed_trunc_f32x4_s";
+        break;
+      case RelaxedTruncUVecF32x4ToVecI32x4:
+        o << "i32x4.relaxed_trunc_f32x4_u";
+        break;
+      case RelaxedTruncZeroSVecF64x2ToVecI32x4:
+        o << "i32x4.relaxed_trunc_f64x2_s_zero";
+        break;
+      case RelaxedTruncZeroUVecF64x2ToVecI32x4:
+        o << "i32x4.relaxed_trunc_f64x2_u_zero";
         break;
       case InvalidUnary:
         WASM_UNREACHABLE("unvalid unary operator");
@@ -1798,6 +1836,22 @@ struct PrintExpressionContents
         o << "i8x16.swizzle";
         break;
 
+      case RelaxedMinVecF32x4:
+        o << "f32x4.relaxed_min";
+        break;
+      case RelaxedMaxVecF32x4:
+        o << "f32x4.relaxed_max";
+        break;
+      case RelaxedMinVecF64x2:
+        o << "f64x2.relaxed_min";
+        break;
+      case RelaxedMaxVecF64x2:
+        o << "f64x2.relaxed_max";
+        break;
+      case RelaxedSwizzleVec8x16:
+        o << "i8x16.relaxed_swizzle";
+        break;
+
       case InvalidBinary:
         WASM_UNREACHABLE("unvalid binary operator");
     }
@@ -1844,6 +1898,18 @@ struct PrintExpressionContents
   void visitRefEq(RefEq* curr) { printMedium(o, "ref.eq"); }
   void visitTableGet(TableGet* curr) {
     printMedium(o, "table.get ");
+    printName(curr->table, o);
+  }
+  void visitTableSet(TableSet* curr) {
+    printMedium(o, "table.set ");
+    printName(curr->table, o);
+  }
+  void visitTableSize(TableSize* curr) {
+    printMedium(o, "table.size ");
+    printName(curr->table, o);
+  }
+  void visitTableGrow(TableGrow* curr) {
+    printMedium(o, "table.grow ");
     printName(curr->table, o);
   }
   void visitTry(Try* curr) {
@@ -2455,9 +2521,22 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       o << " ;; end try";
     }
   }
-  void printUnreachableReplacement(Expression* curr) {
-    // See the parallel function in PrintExpressionContents for background.
+  void maybePrintUnreachableReplacement(Expression* curr, Type type) {
+    // See the parallel function
+    // PrintExpressionContents::printUnreachableReplacement for background. That
+    // one handles the header, and this one the body. For convenience, this one
+    // also gets a parameter of the type to check for unreachability, to avoid
+    // boilerplate in the callers; if the type is not unreachable, it does the
+    // normal behavior.
     //
+    // Note that the list of instructions using that function must match those
+    // using this one, so we print the header and body properly together.
+
+    if (type != Type::unreachable) {
+      visitExpression(curr);
+      return;
+    }
+
     // Emit a block with drops of the children.
     o << "(block";
     if (!minify) {
@@ -2471,38 +2550,43 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     }
     decIndent();
   }
+  void visitStructNew(StructNew* curr) {
+    maybePrintUnreachableReplacement(curr, curr->type);
+  }
   void visitStructSet(StructSet* curr) {
-    if (curr->ref->type == Type::unreachable) {
-      printUnreachableReplacement(curr);
-      return;
-    }
-    visitExpression(curr);
+    maybePrintUnreachableReplacement(curr, curr->ref->type);
   }
   void visitStructGet(StructGet* curr) {
-    if (curr->ref->type == Type::unreachable) {
-      printUnreachableReplacement(curr);
-      return;
-    }
-    visitExpression(curr);
+    maybePrintUnreachableReplacement(curr, curr->ref->type);
+  }
+  void visitArrayNew(ArrayNew* curr) {
+    maybePrintUnreachableReplacement(curr, curr->type);
+  }
+  void visitArrayInit(ArrayInit* curr) {
+    maybePrintUnreachableReplacement(curr, curr->type);
   }
   void visitArraySet(ArraySet* curr) {
-    if (curr->ref->type == Type::unreachable) {
-      printUnreachableReplacement(curr);
-      return;
-    }
-    visitExpression(curr);
+    maybePrintUnreachableReplacement(curr, curr->ref->type);
   }
   void visitArrayGet(ArrayGet* curr) {
-    if (curr->ref->type == Type::unreachable) {
-      printUnreachableReplacement(curr);
-      return;
-    }
-    visitExpression(curr);
+    maybePrintUnreachableReplacement(curr, curr->ref->type);
   }
   // Module-level visitors
+  void printSupertypeOr(HeapType curr, std::string noSuper) {
+    if (auto super = curr.getSuperType()) {
+      TypeNamePrinter(o, currModule).print(*super);
+    } else {
+      o << noSuper;
+    }
+  }
+
   void handleSignature(HeapType curr, Name name = Name()) {
     Signature sig = curr.getSignature();
-    o << "(func";
+    if (!name.is() && getTypeSystem() == TypeSystem::Nominal) {
+      o << "(func_subtype";
+    } else {
+      o << "(func";
+    }
     if (name.is()) {
       o << " $" << name;
     }
@@ -2528,6 +2612,10 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       }
       o << ')';
     }
+    if (!name.is() && getTypeSystem() == TypeSystem::Nominal) {
+      o << ' ';
+      printSupertypeOr(curr, "func");
+    }
     o << ")";
   }
   void handleFieldBody(const Field& field) {
@@ -2550,13 +2638,25 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     }
   }
   void handleArray(HeapType curr) {
-    o << "(array ";
+    if (getTypeSystem() == TypeSystem::Nominal) {
+      o << "(array_subtype ";
+    } else {
+      o << "(array ";
+    }
     handleFieldBody(curr.getArray().element);
+    if (getTypeSystem() == TypeSystem::Nominal) {
+      o << ' ';
+      printSupertypeOr(curr, "data");
+    }
     o << ')';
   }
   void handleStruct(HeapType curr) {
     const auto& fields = curr.getStruct().fields;
-    o << "(struct ";
+    if (getTypeSystem() == TypeSystem::Nominal) {
+      o << "(struct_subtype ";
+    } else {
+      o << "(struct ";
+    }
     auto sep = "";
     for (Index i = 0; i < fields.size(); i++) {
       o << sep << "(field ";
@@ -2569,9 +2669,13 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       o << ')';
       sep = " ";
     }
+    if (getTypeSystem() == TypeSystem::Nominal) {
+      o << ' ';
+      printSupertypeOr(curr, "data");
+    }
     o << ')';
   }
-  void handleHeapType(HeapType type, Module* module) {
+  void handleHeapType(HeapType type) {
     if (type.isSignature()) {
       handleSignature(type);
     } else if (type.isArray()) {
@@ -2580,12 +2684,6 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       handleStruct(type);
     } else {
       o << type;
-    }
-    HeapType super;
-    if (type.getSuperType(super)) {
-      o << " (extends ";
-      TypeNamePrinter(o, module).print(super);
-      o << ')';
     }
   }
   void visitExport(Export* curr) {
@@ -2681,6 +2779,10 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     o << '(';
     printMajor(o, "func ");
     printName(curr->name, o);
+    if (getTypeSystem() == TypeSystem::Nominal) {
+      o << " (type ";
+      printHeapType(o, curr->type, currModule) << ')';
+    }
     if (!stackIR && curr->stackIR && !minify) {
       o << " (; has Stack IR ;)";
     }
@@ -2971,7 +3073,7 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
       printMedium(o, "type") << ' ';
       TypeNamePrinter(o, curr).print(type);
       o << ' ';
-      handleHeapType(type, curr);
+      handleHeapType(type);
       o << ")" << maybeNewLine;
     }
     ModuleUtils::iterImportedMemories(
