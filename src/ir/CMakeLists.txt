@@ -4,6 +4,9 @@ set(ir_SOURCES
   ExpressionManipulator.cpp
   eh-utils.cpp
   intrinsics.cpp
+  lubs.cpp
+  memory-utils.cpp
+  module-utils.cpp
   names.cpp
   properties.cpp
   LocalGraph.cpp

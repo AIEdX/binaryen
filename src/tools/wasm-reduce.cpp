@@ -259,8 +259,11 @@ struct Reducer
       "--flatten -O3",
       "--flatten --simplify-locals-notee-nostructure --local-cse -Os",
       "--coalesce-locals --vacuum",
+      "--dae",
+      "--dae-optimizing",
       "--dce",
       "--duplicate-function-elimination",
+      "--gto",
       "--inlining",
       "--inlining-optimizing",
       "--optimize-level=3 --inlining-optimizing",
@@ -276,6 +279,8 @@ struct Reducer
       "--remove-unused-nonfunction-module-elements",
       "--reorder-functions",
       "--reorder-locals",
+      // TODO: signature* passes
+      "--simplify-globals",
       "--simplify-locals --vacuum",
       "--strip",
       "--vacuum"};
@@ -1173,6 +1178,9 @@ int main(int argc, const char* argv[]) {
   std::string binDir = Path::getDirName(argv[0]);
   bool binary = true, deNan = false, verbose = false, debugInfo = false,
        force = false;
+
+  const std::string WasmReduceOption = "wasm-reduce options";
+
   ToolOptions options("wasm-reduce",
                       "Reduce a wasm file to a smaller one that has the same "
                       "behavior on a given command");
@@ -1183,12 +1191,14 @@ int main(int argc, const char* argv[]) {
          "the command's output identical. "
          "We look at the command's return code and stdout here (TODO: stderr), "
          "and we reduce while keeping those unchanged.",
+         WasmReduceOption,
          Options::Arguments::One,
          [&](Options* o, const std::string& argument) { command = argument; })
     .add("--test",
          "-t",
          "Test file (this will be written to to test, the given command should "
          "read it when we call it)",
+         WasmReduceOption,
          Options::Arguments::One,
          [&](Options* o, const std::string& argument) { test = argument; })
     .add("--working",
@@ -1196,11 +1206,13 @@ int main(int argc, const char* argv[]) {
          "Working file (this will contain the current good state while doing "
          "temporary computations, "
          "and will contain the final best result at the end)",
+         WasmReduceOption,
          Options::Arguments::One,
          [&](Options* o, const std::string& argument) { working = argument; })
     .add("--binaries",
          "-b",
          "binaryen binaries location (bin/ directory)",
+         WasmReduceOption,
          Options::Arguments::One,
          [&](Options* o, const std::string& argument) {
            // Add separator just in case
@@ -1210,33 +1222,39 @@ int main(int argc, const char* argv[]) {
          "-S",
          "Emit intermediate files as text, instead of binary (also make sure "
          "the test and working files have a .wat or .wast suffix)",
+         WasmReduceOption,
          Options::Arguments::Zero,
          [&](Options* o, const std::string& argument) { binary = false; })
     .add("--denan",
          "",
          "Avoid nans when reducing",
+         WasmReduceOption,
          Options::Arguments::Zero,
          [&](Options* o, const std::string& argument) { deNan = true; })
     .add("--verbose",
          "-v",
          "Verbose output mode",
+         WasmReduceOption,
          Options::Arguments::Zero,
          [&](Options* o, const std::string& argument) { verbose = true; })
     .add("--debugInfo",
          "-g",
          "Keep debug info in binaries",
+         WasmReduceOption,
          Options::Arguments::Zero,
          [&](Options* o, const std::string& argument) { debugInfo = true; })
     .add("--force",
          "-f",
          "Force the reduction attempt, ignoring problems that imply it is "
          "unlikely to succeed",
+         WasmReduceOption,
          Options::Arguments::Zero,
          [&](Options* o, const std::string& argument) { force = true; })
     .add("--timeout",
          "-to",
          "A timeout to apply to each execution of the command, in seconds "
          "(default: 2)",
+         WasmReduceOption,
          Options::Arguments::One,
          [&](Options* o, const std::string& argument) {
            timeout = atoi(argument.c_str());
@@ -1246,6 +1264,7 @@ int main(int argc, const char* argv[]) {
          "-ef",
          "Extra commandline flags to pass to wasm-opt while reducing. "
          "(default: --enable-all)",
+         WasmReduceOption,
          Options::Arguments::One,
          [&](Options* o, const std::string& argument) {
            extraFlags = argument;

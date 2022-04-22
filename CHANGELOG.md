@@ -15,6 +15,30 @@ full changeset diff at the end of each section.
 Current Trunk
 -------------
 
+- Add BUILD_TESTS CMake option to make gtest dependency optional.
+- Updated tests to use filecheck 0.0.22 (#4537). Updating is required to
+  successfully run the lit tests. This can be done with
+  `pip3 install -r requirements-dev.txt`.
+
+v106
+----
+
+- [wasm2js] Support exports of Globals (#4523)
+- MergeSimilarFunctions optimization pass (#4414)
+- Various wasm-ctor-eval improvements, including support for GC.
+
+v105
+----
+
+- This release contains binaries for ARM64 MacOS devices (#4397)
+- Otherwise, mostly bug fixes and incremental optimization improvements.
+
+v104
+----
+
+- Bugfixes only, release created due to incorrect github release artifacts in
+  v103 release (#4398).
+
 v103
 ----
 
@@ -44,6 +68,8 @@ v102
 
 - Replace `BinaryenExpressionGetSideEffects`'s features parameter with a module
   parameter.
+
+- OptimizeInstructions now lifts identical code in `select`/`if` arms (#3828). This may cause direct `BinaryenTupleExtract(BinaryenTupleMake(...))` to [use multivalue types](https://github.com/grain-lang/grain/pull/1158).
 
 v101
 ----

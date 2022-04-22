@@ -110,7 +110,7 @@ BINARYEN_API BinaryenType BinaryenTypeUnreachable(void);
 // the API figure out the type instead of providing one.
 BINARYEN_API BinaryenType BinaryenTypeAuto(void);
 BINARYEN_API BinaryenType BinaryenTypeCreate(BinaryenType* valueTypes,
-                                             uint32_t numTypes);
+                                             BinaryenIndex numTypes);
 BINARYEN_API uint32_t BinaryenTypeArity(BinaryenType t);
 BINARYEN_API void BinaryenTypeExpand(BinaryenType t, BinaryenType* buf);
 
@@ -162,6 +162,7 @@ BINARYEN_API BinaryenFeatures BinaryenFeatureGC(void);
 BINARYEN_API BinaryenFeatures BinaryenFeatureMemory64(void);
 BINARYEN_API BinaryenFeatures BinaryenFeatureTypedFunctionReferences(void);
 BINARYEN_API BinaryenFeatures BinaryenFeatureRelaxedSIMD(void);
+BINARYEN_API BinaryenFeatures BinaryenFeatureExtendedConst(void);
 BINARYEN_API BinaryenFeatures BinaryenFeatureAll(void);
 
 // Modules
@@ -591,7 +592,7 @@ BINARYEN_API BinaryenOp BinaryenTruncSatZeroSVecF64x2ToVecI32x4(void);
 BINARYEN_API BinaryenOp BinaryenTruncSatZeroUVecF64x2ToVecI32x4(void);
 BINARYEN_API BinaryenOp BinaryenDemoteZeroVecF64x2ToVecF32x4(void);
 BINARYEN_API BinaryenOp BinaryenPromoteLowVecF32x4ToVecF64x2(void);
-BINARYEN_API BinaryenOp BinaryenSwizzleVec8x16(void);
+BINARYEN_API BinaryenOp BinaryenSwizzleVecI8x16(void);
 BINARYEN_API BinaryenOp BinaryenRefIsNull(void);
 BINARYEN_API BinaryenOp BinaryenRefIsFunc(void);
 BINARYEN_API BinaryenOp BinaryenRefIsData(void);

@@ -572,6 +572,8 @@ public:
   Literal minUI32x4(const Literal& other) const;
   Literal maxSI32x4(const Literal& other) const;
   Literal maxUI32x4(const Literal& other) const;
+  Literal dotSI8x16toI16x8(const Literal& other) const;
+  Literal dotUI8x16toI16x8(const Literal& other) const;
   Literal dotSI16x8toI32x4(const Literal& other) const;
   Literal extMulLowSI32x4(const Literal& other) const;
   Literal extMulHighSI32x4(const Literal& other) const;
@@ -693,6 +695,12 @@ public:
   Literals(size_t initialSize) : SmallVector(initialSize) {}
 
   Type getType() {
+    if (empty()) {
+      return Type::none;
+    }
+    if (size() == 1) {
+      return (*this)[0].type;
+    }
     std::vector<Type> types;
     for (auto& val : *this) {
       types.push_back(val.type);

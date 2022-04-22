@@ -581,14 +581,18 @@ void TranslateToFuzzReader::recombine(Function* func) {
   // First, scan and group all expressions by type.
   struct Scanner
     : public PostWalker<Scanner, UnifiedExpressionVisitor<Scanner>> {
+    TranslateToFuzzReader& parent;
     // A map of all expressions, categorized by type.
     InsertOrderedMap<Type, std::vector<Expression*>> exprsByType;
+    Scanner(TranslateToFuzzReader& parent) : parent(parent) {}
 
     void visitExpression(Expression* curr) {
-      exprsByType[curr->type].push_back(curr);
+      if (parent.canBeArbitrarilyReplaced(curr)) {
+        exprsByType[curr->type].push_back(curr);
+      }
     }
   };
-  Scanner scanner;
+  Scanner scanner(*this);
   scanner.walk(func->body);
   // Potentially trim the list of possible picks, so replacements are more
   // likely to collide.
@@ -2438,7 +2442,7 @@ Expression* TranslateToFuzzReader::makeBinary(Type type) {
                                NarrowUVecI16x8ToVecI8x16,
                                NarrowSVecI32x4ToVecI16x8,
                                NarrowUVecI32x4ToVecI16x8,
-                               SwizzleVec8x16),
+                               SwizzleVecI8x16),
                           make(Type::v128),
                           make(Type::v128)});
     }
@@ -3037,6 +3041,12 @@ HeapType TranslateToFuzzReader::getSubType(HeapType type) {
 }
 
 Rtt TranslateToFuzzReader::getSubType(Rtt rtt) {
+  if (getTypeSystem() == TypeSystem::Nominal ||
+      getTypeSystem() == TypeSystem::Isorecursive) {
+    // With nominal or isorecursive typing the depth in rtts must match the
+    // nominal hierarchy, so we cannot create a random depth like we do below.
+    return rtt;
+  }
   uint32_t depth = rtt.depth != Rtt::NoDepth
                      ? rtt.depth
                      : oneIn(2) ? Rtt::NoDepth : upTo(MAX_RTT_DEPTH + 1);

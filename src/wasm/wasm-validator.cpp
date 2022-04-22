@@ -1633,8 +1633,11 @@ void FunctionValidator::visitBinary(Binary* curr) {
     case NarrowUVecI16x8ToVecI8x16:
     case NarrowSVecI32x4ToVecI16x8:
     case NarrowUVecI32x4ToVecI16x8:
-    case SwizzleVec8x16:
-    case RelaxedSwizzleVec8x16: {
+    case SwizzleVecI8x16:
+    case RelaxedSwizzleVecI8x16:
+    case RelaxedQ15MulrSVecI16x8:
+    case DotI8x16I7x16SToVecI16x8:
+    case DotI8x16I7x16UToVecI16x8: {
       shouldBeEqualOrFirstIsUnreachable(
         curr->left->type, Type(Type::v128), curr, "v128 op");
       shouldBeEqualOrFirstIsUnreachable(
@@ -2202,7 +2205,8 @@ void FunctionValidator::visitTry(Try* curr) {
             << "catch's tag (" << tagName
             << ")'s pop doesn't have the same type as the tag's params";
         }
-        if (!shouldBeTrue(EHUtils::isPopValid(catchBody), curr, "")) {
+        if (!shouldBeTrue(
+              EHUtils::containsValidDanglingPop(catchBody), curr, "")) {
           getStream() << "catch's body (" << tagName
                       << ")'s pop's location is not valid";
         }
@@ -2323,10 +2327,11 @@ void FunctionValidator::visitCallRef(CallRef* curr) {
                curr,
                "call_ref requires typed-function-references to be enabled");
   if (curr->target->type != Type::unreachable) {
-    shouldBeTrue(curr->target->type.isFunction(),
-                 curr,
-                 "call_ref target must be a function reference");
-    validateCallParamsAndResult(curr, curr->target->type.getHeapType());
+    if (shouldBeTrue(curr->target->type.isFunction(),
+                     curr,
+                     "call_ref target must be a function reference")) {
+      validateCallParamsAndResult(curr, curr->target->type.getHeapType());
+    }
   }
 }
 
@@ -2370,6 +2375,8 @@ void FunctionValidator::visitRefTest(RefTest* curr) {
                     HeapType(),
                     curr,
                     "static ref.test must set intendedType field");
+    shouldBeTrue(
+      !curr->intendedType.isBasic(), curr, "ref.test must test a non-basic");
   }
 }
 
@@ -2394,6 +2401,8 @@ void FunctionValidator::visitRefCast(RefCast* curr) {
                     HeapType(),
                     curr,
                     "static ref.cast must set intendedType field");
+    shouldBeTrue(
+      !curr->intendedType.isBasic(), curr, "ref.cast must cast to a non-basic");
   }
 }
 
@@ -2422,6 +2431,9 @@ void FunctionValidator::visitBrOn(BrOn* curr) {
                       HeapType(),
                       curr,
                       "static br_on_cast* must set intendedType field");
+      shouldBeTrue(!curr->intendedType.isBasic(),
+                   curr,
+                   "br_on_cast* must cast to a non-basic");
     }
   } else {
     shouldBeTrue(curr->rtt == nullptr, curr, "non-cast BrOn must not have rtt");
@@ -2726,11 +2738,11 @@ void FunctionValidator::visitFunction(Function* curr) {
     shouldBeTrue(result.isConcrete(), curr, "results must be concretely typed");
   }
   for (const auto& var : curr->vars) {
-    if (var.isRef() && getModule()->features.hasGCNNLocals()) {
-      continue;
-    }
     features |= var.getFeatures();
-    shouldBeTrue(var.isDefaultable(), var, "vars must be defaultable");
+    bool valid = getModule()->features.hasGCNNLocals()
+                   ? var.isDefaultableOrNonNullable()
+                   : var.isDefaultable();
+    shouldBeTrue(valid, var, "vars must be defaultable");
   }
   shouldBeTrue(features <= getModule()->features,
                curr->name,
@@ -2765,13 +2777,21 @@ void FunctionValidator::visitFunction(Function* curr) {
   }
 }
 
-static bool checkSegmentOffset(Expression* curr, Address add, Address max) {
-  if (curr->is<GlobalGet>()) {
-    return true;
+static bool checkSegmentOffset(Expression* curr,
+                               Address add,
+                               Address max,
+                               FeatureSet features) {
+  if (!Properties::isValidInConstantExpression(curr, features)) {
+    return false;
   }
   auto* c = curr->dynCast<Const>();
   if (!c) {
-    return false;
+    // Unless the instruction is actually a const instruction, we don't
+    // currently try to evaluate it.
+    // TODO: Attempt to evaluate other expressions that might also be const
+    // such as `global.get` or more complex instruction sequences involving
+    // add/sub/mul/etc.
+    return true;
   }
   uint64_t raw = c->value.getInteger();
   if (raw > std::numeric_limits<Address::address32_t>::max()) {
@@ -2997,9 +3017,10 @@ static void validateGlobals(Module& module, ValidationInfo& info) {
     info.shouldBeTrue(
       curr->init != nullptr, curr->name, "global init must be non-null");
     assert(curr->init);
-    info.shouldBeTrue(GlobalUtils::canInitializeGlobal(curr->init),
-                      curr->name,
-                      "global init must be valid");
+    info.shouldBeTrue(
+      GlobalUtils::canInitializeGlobal(curr->init, module.features),
+      curr->name,
+      "global init must be valid");
 
     if (!info.shouldBeSubType(curr->init->type,
                               curr->type,
@@ -3064,7 +3085,8 @@ static void validateMemory(Module& module, ValidationInfo& info) {
       }
       info.shouldBeTrue(checkSegmentOffset(segment.offset,
                                            segment.data.size(),
-                                           curr.initial * Memory::kPageSize),
+                                           curr.initial * Memory::kPageSize,
+                                           module.features),
                         segment.offset,
                         "memory segment offset should be reasonable");
       if (segment.offset->is<Const>()) {
@@ -3169,7 +3191,8 @@ static void validateTables(Module& module, ValidationInfo& info) {
                          "element segment offset should be i32");
       info.shouldBeTrue(checkSegmentOffset(segment->offset,
                                            segment->data.size(),
-                                           table->initial * Table::kPageSize),
+                                           table->initial * Table::kPageSize,
+                                           module.features),
                         segment->offset,
                         "table segment offset should be reasonable");
       if (module.features.hasTypedFunctionReferences()) {

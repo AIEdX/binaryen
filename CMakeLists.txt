@@ -7,12 +7,20 @@ cmake_minimum_required(VERSION 3.10.2)
 # to reduce this for compatability with emsdk.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14" CACHE STRING "Minimum OS X deployment version")
 
-project(binaryen LANGUAGES C CXX VERSION 103)
+project(binaryen LANGUAGES C CXX VERSION 106)
 include(GNUInstallDirs)
 
 # The C++ standard whose features are required to build Binaryen.
 # Keep in sync with scripts/test/shared.py cxx_standard
-set(CXX_STANDARD 17)
+# The if condition allows embedding in a project with a higher default C++ standard set
+set(REQUIRED_CXX_STANDARD 17)
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD ${REQUIRED_CXX_STANDARD})
+elseif(CMAKE_CXX_STANDARD LESS ${REQUIRED_CXX_STANDARD})
+  message(SEND_ERROR "Building with C++ standards older than C++${REQUIRED_CXX_STANDARD} is not supported, change CMAKE_CXX_STANDARD to ${REQUIRED_CXX_STANDARD} or later")
+endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
   message(STATUS "No build type selected, default to Release")
@@ -22,6 +30,9 @@ endif()
 # We default to assertions enabled, even in release builds so that we get
 # more useful error reports from users.
 option(BYN_ENABLE_ASSERTIONS "Enable assertions" ON)
+
+# Turn this off to avoid the dependency on gtest.
+option(BUILD_TESTS "Build GTest-based tests" ON)
 
 # For git users, attempt to generate a more useful version string
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
@@ -105,6 +116,14 @@ function(binaryen_setup_rpath name)
                         ${_install_name_dir})
 endfunction()
 
+function(binaryen_add_executable name sources)
+  add_executable(${name} ${sources})
+  target_link_libraries(${name} ${CMAKE_THREAD_LIBS_INIT})
+  target_link_libraries(${name} binaryen)
+  binaryen_setup_rpath(${name})
+  install(TARGETS ${name} DESTINATION ${CMAKE_INSTALL_BINDIR})
+endfunction()
+
 # Options
 
 option(BUILD_STATIC_LIB "Build as a static library" OFF)
@@ -148,9 +167,7 @@ if(BYN_ENABLE_LTO)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "ThinLTO is only supported by clang")
   endif()
-  if(NOT APPLE)
-    add_link_flag("-fuse-ld=lld")
-  endif()
+  add_link_flag("-fuse-ld=lld")
   set_property(GLOBAL APPEND PROPERTY JOB_POOLS link_job_pool=2)
   set(CMAKE_JOB_POOL_LINK link_job_pool)
   add_compile_flag("-flto=thin")
@@ -165,12 +182,11 @@ if(MSVC)
       add_compile_flag("/arch:sse2")
     endif()
   endif()
-  add_compile_flag("/std:c++${CXX_STANDARD}")
   add_compile_flag("/wd4146") # Ignore warning "warning C4146: unary minus operator applied to unsigned type, result still unsigned", this pattern is used somewhat commonly in the code.
   # 4267 and 4244 are conversion/truncation warnings. We might want to fix these but they are currently pervasive.
   add_compile_flag("/wd4267")
   add_compile_flag("/wd4244")
-  # 4722 warns that destructors never return, even with WASM_NORETURN.
+  # 4722 warns that destructors never return, even with [[noreturn]].
   add_compile_flag("/wd4722")
   # "destructor was implicitly defined as deleted" caused by LLVM headers.
   add_compile_flag("/wd4624")
@@ -223,7 +239,6 @@ else()
   set(THREADS_PREFER_PTHREAD_FLAG ON)
   set(CMAKE_THREAD_PREFER_PTHREAD ON)
   find_package(Threads REQUIRED)
-  add_cxx_flag("-std=c++${CXX_STANDARD}")
   if(NOT EMSCRIPTEN)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^i.86$")
       # wasm doesn't allow for x87 floating point math
@@ -306,6 +321,11 @@ add_subdirectory(third_party)
 # Configure lit tests
 add_subdirectory(test/lit)
 
+if(BUILD_TESTS)
+  # Configure GTest unit tests
+  add_subdirectory(test/gtest)
+endif()
+
 # Object files
 set(binaryen_objs
     $<TARGET_OBJECTS:passes>
@@ -371,8 +391,6 @@ if(EMSCRIPTEN)
   target_link_libraries(binaryen_wasm optimized "--closure-args \"--language_in=ECMASCRIPT6 --language_out=ECMASCRIPT6\"")
   target_link_libraries(binaryen_wasm optimized "-flto")
   target_link_libraries(binaryen_wasm debug "--profiling")
-  set_property(TARGET binaryen_wasm PROPERTY CXX_STANDARD ${CXX_STANDARD})
-  set_property(TARGET binaryen_wasm PROPERTY CXX_STANDARD_REQUIRED ON)
   install(TARGETS binaryen_wasm DESTINATION ${CMAKE_INSTALL_BINDIR})
 
   # binaryen.js JavaScript variant
@@ -396,8 +414,6 @@ if(EMSCRIPTEN)
   target_link_libraries(binaryen_js optimized "-flto")
   target_link_libraries(binaryen_js debug "--profiling")
   target_link_libraries(binaryen_js debug "-s ASSERTIONS")
-  set_property(TARGET binaryen_js PROPERTY CXX_STANDARD ${CXX_STANDARD})
-  set_property(TARGET binaryen_js PROPERTY CXX_STANDARD_REQUIRED ON)
   install(TARGETS binaryen_js DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 

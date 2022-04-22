@@ -148,10 +148,10 @@ BinaryenType BinaryenTypeDataref(void) { return Type::dataref; }
 BinaryenType BinaryenTypeUnreachable(void) { return Type::unreachable; }
 BinaryenType BinaryenTypeAuto(void) { return uintptr_t(-1); }
 
-BinaryenType BinaryenTypeCreate(BinaryenType* types, uint32_t numTypes) {
+BinaryenType BinaryenTypeCreate(BinaryenType* types, BinaryenIndex numTypes) {
   std::vector<Type> typeVec;
   typeVec.reserve(numTypes);
-  for (size_t i = 0; i < numTypes; ++i) {
+  for (BinaryenIndex i = 0; i < numTypes; ++i) {
     typeVec.push_back(Type(types[i]));
   }
   return Type(typeVec).getID();
@@ -251,6 +251,9 @@ BinaryenFeatures BinaryenFeatureTypedFunctionReferences(void) {
 }
 BinaryenFeatures BinaryenFeatureRelaxedSIMD(void) {
   return static_cast<BinaryenFeatures>(FeatureSet::RelaxedSIMD);
+}
+BinaryenFeatures BinaryenFeatureExtendedConst(void) {
+  return static_cast<BinaryenFeatures>(FeatureSet::ExtendedConst);
 }
 BinaryenFeatures BinaryenFeatureAll(void) {
   return static_cast<BinaryenFeatures>(FeatureSet::All);
@@ -754,7 +757,7 @@ BinaryenOp BinaryenDemoteZeroVecF64x2ToVecF32x4(void) {
 BinaryenOp BinaryenPromoteLowVecF32x4ToVecF64x2(void) {
   return PromoteLowVecF32x4ToVecF64x2;
 }
-BinaryenOp BinaryenSwizzleVec8x16(void) { return SwizzleVec8x16; }
+BinaryenOp BinaryenSwizzleVecI8x16(void) { return SwizzleVecI8x16; }
 BinaryenOp BinaryenRefIsNull(void) { return RefIsNull; }
 BinaryenOp BinaryenRefIsFunc(void) { return RefIsFunc; }
 BinaryenOp BinaryenRefIsData(void) { return RefIsData; }
@@ -4124,7 +4127,7 @@ BinaryenModuleRef BinaryenModuleRead(char* input, size_t inputSize) {
 
 void BinaryenModuleInterpret(BinaryenModuleRef module) {
   ShellExternalInterface interface;
-  ModuleInstance instance(*(Module*)module, &interface, {});
+  ModuleRunner instance(*(Module*)module, &interface, {});
 }
 
 BinaryenIndex BinaryenModuleAddDebugInfoFileName(BinaryenModuleRef module,
@@ -4617,10 +4620,6 @@ void BinaryenSetColorsEnabled(bool enabled) { Colors::setEnabled(enabled); }
 bool BinaryenAreColorsEnabled() { return Colors::isEnabled(); }
 
 #ifdef __EMSCRIPTEN__
-// Override atexit - we don't need any global ctors to actually run, and
-// otherwise we get clutter in the output in debug builds
-int atexit(void (*function)(void)) { return 0; }
-
 // Internal binaryen.js APIs
 
 // Returns the size of a Literal object.

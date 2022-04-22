@@ -26,6 +26,7 @@
 #include <ir/bits.h>
 #include <ir/cost.h>
 #include <ir/effects.h>
+#include <ir/eh-utils.h>
 #include <ir/find_all.h>
 #include <ir/gc-type-utils.h>
 #include <ir/iteration.h>
@@ -229,6 +230,9 @@ struct OptimizeInstructions
     // Some patterns create locals (like when we use getResultOfFirst), which we
     // may need to fix up.
     TypeUpdating::handleNonDefaultableLocals(func, *getModule());
+    // Some patterns create blocks that can interfere 'catch' and 'pop', nesting
+    // the 'pop' into a block making it invalid.
+    EHUtils::handleBlockNestedPops(func, *getModule());
   }
 
   // Set to true when one of the visitors makes a change (either replacing the
@@ -2494,19 +2498,71 @@ private:
   // We can combine `and` operations, e.g.
   //   (x == 0) & (y == 0)   ==>    (x | y) == 0
   Expression* combineAnd(Binary* curr) {
+    assert(curr->op == AndInt32);
+
     using namespace Abstract;
     using namespace Match;
+
     {
       // (i32(x) == 0) & (i32(y) == 0)   ==>   i32(x | y) == 0
       // (i64(x) == 0) & (i64(y) == 0)   ==>   i64(x | y) == 0
       Expression *x, *y;
-      if (matches(curr,
-                  binary(AndInt32, unary(EqZ, any(&x)), unary(EqZ, any(&y)))) &&
-          x->type == y->type) {
+      if (matches(curr->left, unary(EqZ, any(&x))) &&
+          matches(curr->right, unary(EqZ, any(&y))) && x->type == y->type) {
         auto* inner = curr->left->cast<Unary>();
-        inner->value = Builder(*getModule())
-                         .makeBinary(Abstract::getBinary(x->type, Or), x, y);
+        inner->value =
+          Builder(*getModule()).makeBinary(getBinary(x->type, Or), x, y);
         return inner;
+      }
+    }
+    {
+      // Binary operations that inverse a bitwise AND can be
+      // reordered. If F(x) = binary(x, c), and F(x) preserves AND,
+      // that is,
+      //
+      //   F(x) & F(y) == F(x | y)
+      //
+      // Then also
+      //
+      //   binary(x, c) & binary(y, c)  =>  binary(x | y, c)
+      Binary *bx, *by;
+      Expression *x, *y;
+      Const *cx, *cy;
+      if (matches(curr->left, binary(&bx, any(&x), ival(&cx))) &&
+          matches(curr->right, binary(&by, any(&y), ival(&cy))) &&
+          bx->op == by->op && x->type == y->type && cx->value == cy->value &&
+          inversesAnd(bx)) {
+        by->op = getBinary(x->type, Or);
+        by->type = x->type;
+        by->left = x;
+        by->right = y;
+        bx->left = by;
+        return bx;
+      }
+    }
+    {
+      // Binary operations that preserve a bitwise AND can be
+      // reordered. If F(x) = binary(x, c), and F(x) preserves AND,
+      // that is,
+      //
+      //   F(x) & F(y) == F(x & y)
+      //
+      // Then also
+      //
+      //   binary(x, c) & binary(y, c)  =>  binary(x & y, c)
+      Binary *bx, *by;
+      Expression *x, *y;
+      Const *cx, *cy;
+      if (matches(curr->left, binary(&bx, any(&x), ival(&cx))) &&
+          matches(curr->right, binary(&by, any(&y), ival(&cy))) &&
+          bx->op == by->op && x->type == y->type && cx->value == cy->value &&
+          preserveAnd(bx)) {
+        by->op = getBinary(x->type, And);
+        by->type = x->type;
+        by->left = x;
+        by->right = y;
+        bx->left = by;
+        return bx;
       }
     }
     return nullptr;
@@ -2516,10 +2572,11 @@ private:
   //   (x > y)  | (x == y)    ==>    x >= y
   //   (x != 0) | (y != 0)    ==>    (x | y) != 0
   Expression* combineOr(Binary* curr) {
+    assert(curr->op == OrInt32);
+
     using namespace Abstract;
     using namespace Match;
 
-    assert(curr->op == OrInt32);
     if (auto* left = curr->left->dynCast<Binary>()) {
       if (auto* right = curr->right->dynCast<Binary>()) {
         if (left->op != right->op &&
@@ -2543,6 +2600,31 @@ private:
       }
     }
     {
+      // Binary operations that inverses a bitwise OR to AND.
+      // If F(x) = binary(x, c), and F(x) inverses OR,
+      // that is,
+      //
+      //   F(x) | F(y) == F(x & y)
+      //
+      // Then also
+      //
+      //   binary(x, c) | binary(y, c)  =>  binary(x & y, c)
+      Binary *bx, *by;
+      Expression *x, *y;
+      Const *cx, *cy;
+      if (matches(curr->left, binary(&bx, any(&x), ival(&cx))) &&
+          matches(curr->right, binary(&by, any(&y), ival(&cy))) &&
+          bx->op == by->op && x->type == y->type && cx->value == cy->value &&
+          inversesOr(bx)) {
+        by->op = getBinary(x->type, And);
+        by->type = x->type;
+        by->left = x;
+        by->right = y;
+        bx->left = by;
+        return bx;
+      }
+    }
+    {
       // Binary operations that preserve a bitwise OR can be
       // reordered. If F(x) = binary(x, c), and F(x) preserves OR,
       // that is,
@@ -2555,14 +2637,15 @@ private:
       Binary *bx, *by;
       Expression *x, *y;
       Const *cx, *cy;
-      if (matches(curr,
-                  binary(OrInt32,
-                         binary(&bx, any(&x), ival(&cx)),
-                         binary(&by, any(&y), ival(&cy)))) &&
+      if (matches(curr->left, binary(&bx, any(&x), ival(&cx))) &&
+          matches(curr->right, binary(&by, any(&y), ival(&cy))) &&
           bx->op == by->op && x->type == y->type && cx->value == cy->value &&
           preserveOr(bx)) {
-        bx->left = Builder(*getModule())
-                     .makeBinary(Abstract::getBinary(x->type, Or), x, y);
+        by->op = getBinary(x->type, Or);
+        by->type = x->type;
+        by->left = x;
+        by->right = y;
+        bx->left = by;
         return bx;
       }
     }
@@ -2588,10 +2671,84 @@ private:
     if (matches(curr, binary(Ne, any(), ival(0)))) {
       return true;
     }
-
     // (x < 0) | (y < 0)    ==>    (x | y) < 0
     // This effectively checks if x or y have the sign bit set.
     if (matches(curr, binary(LtS, any(), ival(0)))) {
+      return true;
+    }
+    return false;
+  }
+
+  // Check whether an operation inverses the Or operation to And, that is,
+  //
+  //   F(x | y) = F(x) & F(y)
+  //
+  // Mathematically that means F is homomorphic with respect to the | operation.
+  //
+  // F(x) is seen as taking a single parameter of its first child. That is, the
+  // first child is |x|, and the rest is constant. For example, if we are given
+  // a binary with operation != and the right child is a constant 0, then
+  // F(x) = (x != 0).
+  bool inversesOr(Binary* curr) {
+    using namespace Abstract;
+    using namespace Match;
+
+    // (x >= 0) | (y >= 0)   ==>   (x & y) >= 0
+    if (matches(curr, binary(GeS, any(), ival(0)))) {
+      return true;
+    }
+
+    // (x !=-1) | (y !=-1)   ==>   (x & y) !=-1
+    if (matches(curr, binary(Ne, any(), ival(-1)))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Check whether an operation preserves the And operation through it, that is,
+  //
+  //   F(x & y) = F(x) & F(y)
+  //
+  // Mathematically that means F is homomorphic with respect to the & operation.
+  //
+  // F(x) is seen as taking a single parameter of its first child. That is, the
+  // first child is |x|, and the rest is constant. For example, if we are given
+  // a binary with operation != and the right child is a constant 0, then
+  // F(x) = (x != 0).
+  bool preserveAnd(Binary* curr) {
+    using namespace Abstract;
+    using namespace Match;
+
+    // (x < 0) & (y < 0)   ==>   (x & y) < 0
+    if (matches(curr, binary(LtS, any(), ival(0)))) {
+      return true;
+    }
+
+    // (x == -1) & (y == -1)   ==>   (x & y) == -1
+    if (matches(curr, binary(Eq, any(), ival(-1)))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Check whether an operation inverses the And operation to Or, that is,
+  //
+  //   F(x & y) = F(x) | F(y)
+  //
+  // Mathematically that means F is homomorphic with respect to the & operation.
+  //
+  // F(x) is seen as taking a single parameter of its first child. That is, the
+  // first child is |x|, and the rest is constant. For example, if we are given
+  // a binary with operation != and the right child is a constant 0, then
+  // F(x) = (x != 0).
+  bool inversesAnd(Binary* curr) {
+    using namespace Abstract;
+    using namespace Match;
+
+    // (x >= 0) & (y >= 0)   ==>   (x | y) >= 0
+    if (matches(curr, binary(GeS, any(), ival(0)))) {
       return true;
     }
 
