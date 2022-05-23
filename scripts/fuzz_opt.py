@@ -809,8 +809,8 @@ class CheckDeterminism(TestCaseHandler):
         b1 = open('b1.wasm', 'rb').read()
         b2 = open('b2.wasm', 'rb').read()
         if (b1 != b2):
-            run([in_bin('wasm-dis'), 'b1.wasm', '-o', 'b1.wat'])
-            run([in_bin('wasm-dis'), 'b2.wasm', '-o', 'b2.wat'])
+            run([in_bin('wasm-dis'), 'b1.wasm', '-o', 'b1.wat', TYPE_SYSTEM_FLAG])
+            run([in_bin('wasm-dis'), 'b2.wasm', '-o', 'b2.wat', TYPE_SYSTEM_FLAG])
             t1 = open('b1.wat', 'r').read()
             t2 = open('b2.wat', 'r').read()
             compare(t1, t2, 'Output must be deterministic.', verbose=False)
@@ -1048,7 +1048,11 @@ def test_one(random_input, given_wasm):
         # apply properties like not having any NaNs, which the original fuzz
         # wasm had applied. that is, we need to preserve properties like not
         # having nans through reduction.
-        run([in_bin('wasm-opt'), given_wasm, '-o', 'a.wasm'] + FUZZ_OPTS + FEATURE_OPTS)
+        try:
+            run([in_bin('wasm-opt'), given_wasm, '-o', 'a.wasm'] + FUZZ_OPTS + FEATURE_OPTS)
+        except Exception as e:
+            print("Internal error in fuzzer! Could not run given wasm")
+            raise e
     else:
         # emit the target features section so that reduction can work later,
         # without needing to specify the features
@@ -1365,9 +1369,9 @@ on valid wasm files.)
                     reduce_sh.write('''\
 # check the input is even a valid wasm file
 echo "At least one of the next two values should be 0:"
-%(wasm_opt)s --detect-features %(temp_wasm)s
+%(wasm_opt)s %(typesystem)s --detect-features %(temp_wasm)s
 echo "  " $?
-%(wasm_opt)s --all-features %(temp_wasm)s
+%(wasm_opt)s %(typesystem)s --all-features %(temp_wasm)s
 echo "  " $?
 
 # run the command
@@ -1404,6 +1408,7 @@ echo "  " $?
                          'auto_init': auto_init,
                          'original_wasm': original_wasm,
                          'temp_wasm': os.path.abspath('t.wasm'),
+                         'typesystem': TYPE_SYSTEM_FLAG,
                          'reduce_sh': os.path.abspath('reduce.sh')})
 
                 print('''\

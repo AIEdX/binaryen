@@ -382,6 +382,10 @@ enum EncodedType {
   Struct = -0x21, // 0x5f
   Array = -0x22,  // 0x5e
   Sub = -0x30,    // 0x50
+  // prototype nominal forms we still parse
+  FuncSubtype = -0x23,   // 0x5d
+  StructSubtype = -0x24, // 0x5c
+  ArraySubtype = -0x25,  // 0x5b
   // isorecursive recursion groups
   Rec = -0x31, // 0x4f
   // block_type
@@ -1108,6 +1112,7 @@ enum ASTNodes {
   RefCastStatic = 0x45,
   BrOnCastStatic = 0x46,
   BrOnCastStaticFail = 0x47,
+  RefCastNopStatic = 0x48,
   RefIsFunc = 0x50,
   RefIsData = 0x51,
   RefIsI31 = 0x52,

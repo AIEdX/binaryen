@@ -1866,9 +1866,6 @@ void WasmBinaryBuilder::readMemory() {
 void WasmBinaryBuilder::readTypes() {
   BYN_TRACE("== readTypes\n");
   TypeBuilder builder(getU32LEB());
-  if (getTypeSystem() == TypeSystem::Nominal && builder.size() > 1) {
-    throwError("Nominal type sections must have a single element");
-  }
   BYN_TRACE("num: " << builder.size() << std::endl);
 
   auto makeType = [&](int32_t typeCode) {
@@ -1985,6 +1982,7 @@ void WasmBinaryBuilder::readTypes() {
       builder.createRecGroup(i, groupSize);
       form = getS32LEB();
     }
+    std::optional<uint32_t> superIndex;
     if (form == BinaryConsts::EncodedType::Sub) {
       uint32_t supers = getU32LEB();
       if (supers > 0) {
@@ -1992,23 +1990,53 @@ void WasmBinaryBuilder::readTypes() {
           throwError("Invalid type definition with " + std::to_string(supers) +
                      " supertypes");
         }
-        uint32_t superIndex = getU32LEB();
-        if (superIndex > builder.size()) {
-          throwError("Out of bounds supertype index " +
-                     std::to_string(superIndex));
-        }
-        builder[i].subTypeOf(builder[superIndex]);
+        superIndex = getU32LEB();
       }
       form = getS32LEB();
     }
-    if (form == BinaryConsts::EncodedType::Func) {
+    if (form == BinaryConsts::EncodedType::Func ||
+        form == BinaryConsts::EncodedType::FuncSubtype) {
       builder[i] = readSignatureDef();
-    } else if (form == BinaryConsts::EncodedType::Struct) {
+    } else if (form == BinaryConsts::EncodedType::Struct ||
+               form == BinaryConsts::EncodedType::StructSubtype) {
       builder[i] = readStructDef();
-    } else if (form == BinaryConsts::EncodedType::Array) {
+    } else if (form == BinaryConsts::EncodedType::Array ||
+               form == BinaryConsts::EncodedType::ArraySubtype) {
       builder[i] = Array(readFieldDef());
     } else {
       throwError("Bad type form " + std::to_string(form));
+    }
+    if (form == BinaryConsts::EncodedType::FuncSubtype ||
+        form == BinaryConsts::EncodedType::StructSubtype ||
+        form == BinaryConsts::EncodedType::ArraySubtype) {
+      int64_t super = getS64LEB(); // TODO: Actually s33
+      if (super >= 0) {
+        superIndex = (uint32_t)super;
+      } else {
+        // Validate but otherwise ignore trivial supertypes.
+        HeapType basicSuper;
+        if (!getBasicHeapType(super, basicSuper)) {
+          throwError("Unrecognized supertype " + std::to_string(super));
+        }
+        if (form == BinaryConsts::EncodedType::FuncSubtype) {
+          if (basicSuper != HeapType::func) {
+            throwError(
+              "The only allowed trivial supertype for functions is func");
+          }
+        } else {
+          if (basicSuper != HeapType::data) {
+            throwError("The only allowed trivial supertype for structs and "
+                       "arrays is data");
+          }
+        }
+      }
+    }
+    if (superIndex) {
+      if (*superIndex > builder.size()) {
+        throwError("Out of bounds supertype index " +
+                   std::to_string(*superIndex));
+      }
+      builder[i].subTypeOf(builder[*superIndex]);
     }
   }
 
@@ -6681,10 +6709,13 @@ bool WasmBinaryBuilder::maybeVisitRefCast(Expression*& out, uint32_t code) {
     auto* ref = popNonVoidExpression();
     out = Builder(wasm).makeRefCast(ref, rtt);
     return true;
-  } else if (code == BinaryConsts::RefCastStatic) {
+  } else if (code == BinaryConsts::RefCastStatic ||
+             code == BinaryConsts::RefCastNopStatic) {
     auto intendedType = getIndexedHeapType();
     auto* ref = popNonVoidExpression();
-    out = Builder(wasm).makeRefCast(ref, intendedType);
+    auto safety =
+      code == BinaryConsts::RefCastNopStatic ? RefCast::Unsafe : RefCast::Safe;
+    out = Builder(wasm).makeRefCast(ref, intendedType, safety);
     return true;
   }
   return false;

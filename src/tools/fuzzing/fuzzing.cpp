@@ -1856,50 +1856,55 @@ Literal TranslateToFuzzReader::makeLiteral(Type type) {
 }
 
 Expression* TranslateToFuzzReader::makeRefFuncConst(Type type) {
-  // ref.as_non_null is allowed in globals and we don't yet support func.ref in
-  // globals because we create globals before we create functions. As a result,
-  // we can only create non-nullable function references if we are in a function
-  // context for now.
-  // TODO: Generate trivial functions to support ref.func in globals.
-  assert(type.isNullable() || funcContext);
-  if (!funcContext || (type.isNullable() && oneIn(8))) {
-    return builder.makeRefNull(type);
-  }
-
   auto heapType = type.getHeapType();
   if (heapType == HeapType::func) {
     // First set to target to the last created function, and try to select
     // among other existing function if possible.
-    Function* target = funcContext->func;
-    if (!wasm.functions.empty() && !oneIn(wasm.functions.size())) {
+    Function* target = funcContext ? funcContext->func : nullptr;
+    // If there is no last function, and we have others, pick between them. Also
+    // pick between them with some random probability even if there is a last
+    // function.
+    if (!target || (!wasm.functions.empty() && !oneIn(wasm.functions.size()))) {
       target = pick(wasm.functions).get();
     }
-    return builder.makeRefFunc(target->name, target->type);
-  } else {
-    // TODO: randomize the order
-    for (auto& func : wasm.functions) {
-      if (Type::isSubType(type, Type(func->type, NonNullable))) {
-        return builder.makeRefFunc(func->name, func->type);
-      }
+    if (target) {
+      return builder.makeRefFunc(target->name, target->type);
     }
-    // We don't have a matching function, so create a null with high probability
-    // if the type is nullable or otherwise create and cast a null with low
-    // probability.
-    if ((type.isNullable() && !oneIn(8)) || oneIn(8)) {
-      Expression* ret = builder.makeRefNull(Type(heapType, Nullable));
-      if (!type.isNullable()) {
-        ret = builder.makeRefAs(RefAsNonNull, ret);
-      }
-      return ret;
-    }
-    // As a final option, create a new function with the correct signature.
-    auto* func = wasm.addFunction(
-      builder.makeFunction(Names::getValidFunctionName(wasm, "ref_func_target"),
-                           heapType,
-                           {},
-                           builder.makeUnreachable()));
-    return builder.makeRefFunc(func->name, heapType);
   }
+  if (heapType == HeapType::func) {
+    // From here on we need a specific signature type, as we want to create a
+    // RefFunc or even a Function out of it. Pick an arbitrary one if we only
+    // had generic 'func' here.
+    heapType = Signature(Type::none, Type::none);
+  }
+  // TODO: randomize the order
+  for (auto& func : wasm.functions) {
+    if (Type::isSubType(type, Type(func->type, NonNullable))) {
+      return builder.makeRefFunc(func->name, func->type);
+    }
+  }
+  // We don't have a matching function. Create a null some of the time here,
+  // but only rarely if the type is non-nullable (because in that case we'd need
+  // to add a ref.as_non_null to validate, and the code will trap when we get
+  // here).
+  if ((type.isNullable() && oneIn(2)) || (type.isNonNullable() && oneIn(16))) {
+    Expression* ret = builder.makeRefNull(Type(heapType, Nullable));
+    if (!type.isNullable()) {
+      ret = builder.makeRefAs(RefAsNonNull, ret);
+    }
+    return ret;
+  }
+  // As a final option, create a new function with the correct signature. If it
+  // returns a value, write a trap as we do not want to create any more code
+  // here (we might end up recursing). Note that a trap in the function lets us
+  // execute more code then the ref.as_non_null path just before us, which traps
+  // even if we never call the function.
+  auto* body = heapType.getSignature().results == Type::none
+                 ? (Expression*)builder.makeNop()
+                 : (Expression*)builder.makeUnreachable();
+  auto* func = wasm.addFunction(builder.makeFunction(
+    Names::getValidFunctionName(wasm, "ref_func_target"), heapType, {}, body));
+  return builder.makeRefFunc(func->name, heapType);
 }
 
 Expression* TranslateToFuzzReader::makeConst(Type type) {
@@ -1919,13 +1924,26 @@ Expression* TranslateToFuzzReader::makeConst(Type type) {
           Nullability nullability = getSubType(type.getNullability());
           HeapType subtype;
           if (funcContext || nullability == Nullable) {
-            subtype = pick(HeapType::func, HeapType::i31, HeapType::data);
+            subtype = pick(FeatureOptions<HeapType>()
+                             .add(FeatureSet::ReferenceTypes, HeapType::func)
+                             .add(FeatureSet::ReferenceTypes | FeatureSet::GC,
+                                  HeapType::func,
+                                  HeapType::i31,
+                                  HeapType::data));
           } else {
-            subtype = HeapType::data;
+            subtype = HeapType::func;
           }
           return makeConst(Type(subtype, nullability));
         }
         case HeapType::eq: {
+          assert(wasm.features.hasReferenceTypes());
+          if (!wasm.features.hasGC()) {
+            // Without wasm GC all we have is an "abstract" eqref type, which is
+            // a subtype of anyref, but we cannot create constants of it, except
+            // for null.
+            assert(type.isNullable());
+            return builder.makeRefNull(type);
+          }
           auto nullability = getSubType(type.getNullability());
           // i31.new is not allowed in initializer expressions.
           HeapType subtype;
@@ -1937,6 +1955,7 @@ Expression* TranslateToFuzzReader::makeConst(Type type) {
           return makeConst(Type(subtype, nullability));
         }
         case HeapType::i31:
+          assert(wasm.features.hasReferenceTypes() && wasm.features.hasGC());
           // i31.new is not allowed in initializer expressions.
           if (funcContext) {
             return builder.makeI31New(makeConst(Type::i32));
@@ -1945,6 +1964,7 @@ Expression* TranslateToFuzzReader::makeConst(Type type) {
             return builder.makeRefNull(type);
           }
         case HeapType::data:
+          assert(wasm.features.hasReferenceTypes() && wasm.features.hasGC());
           // TODO: Construct nontrivial types. For now just create a hard coded
           // struct or array.
           if (oneIn(2)) {
@@ -2914,7 +2934,9 @@ Type TranslateToFuzzReader::getSingleConcreteType() {
 
 Type TranslateToFuzzReader::getReferenceType() {
   return pick(FeatureOptions<Type>()
-                .add(FeatureSet::ReferenceTypes, Type::funcref, Type::anyref)
+                // Avoid Type::anyref without GC enabled, see
+                // TranslateToFuzzReader::getSingleConcreteType.
+                .add(FeatureSet::ReferenceTypes, Type::funcref)
                 .add(FeatureSet::ReferenceTypes | FeatureSet::GC,
                      Type(HeapType::func, NonNullable),
                      Type(HeapType::any, NonNullable),
@@ -2989,8 +3011,19 @@ bool TranslateToFuzzReader::isLoggableType(Type type) {
 }
 
 Nullability TranslateToFuzzReader::getSubType(Nullability nullability) {
-  return nullability == NonNullable ? NonNullable
-                                    : oneIn(2) ? Nullable : NonNullable;
+  if (nullability == NonNullable) {
+    return NonNullable;
+  }
+  // Without wasm GC, avoid non-nullable types as we cannot create any values
+  // of such types. For example, reference types adds eqref, but there is no
+  // way to create such a value, only to receive it from the outside, while GC
+  // adds i31/struct/array creation. Without GC, we will likely need to create a
+  // null of this type (unless we are lucky enough to have a non-null value
+  // arriving from an import), so avoid a non-null type if possible.
+  if (wasm.features.hasGC() && oneIn(2)) {
+    return NonNullable;
+  }
+  return Nullable;
 }
 
 HeapType TranslateToFuzzReader::getSubType(HeapType type) {
@@ -3001,13 +3034,19 @@ HeapType TranslateToFuzzReader::getSubType(HeapType type) {
         return HeapType::func;
       case HeapType::any:
         // TODO: nontrivial types as well.
-        return pick(HeapType::func,
-                    HeapType::any,
-                    HeapType::eq,
-                    HeapType::i31,
-                    HeapType::data);
+        return pick(
+          FeatureOptions<HeapType>()
+            .add(FeatureSet::ReferenceTypes, HeapType::func, HeapType::any)
+            .add(FeatureSet::ReferenceTypes | FeatureSet::GC,
+                 HeapType::func,
+                 HeapType::any,
+                 HeapType::eq,
+                 HeapType::i31,
+                 HeapType::data));
       case HeapType::eq:
         // TODO: nontrivial types as well.
+        assert(wasm.features.hasReferenceTypes());
+        assert(wasm.features.hasGC());
         return pick(HeapType::eq, HeapType::i31, HeapType::data);
       case HeapType::i31:
         return HeapType::i31;
