@@ -15,14 +15,15 @@
  */
 
 #include <cstddef>
+#include <cstring>
 #include <iterator>
 #include <optional>
 #include <ostream>
 #include <string_view>
 #include <variant>
 
-#ifndef wasm_wat_parser_h
-#define wasm_wat_parser_h
+#ifndef wasm_wat_lexer_h
+#define wasm_wat_lexer_h
 
 namespace wasm::WATParser {
 
@@ -101,6 +102,38 @@ struct Token {
   std::string_view span;
   Data data;
 
+  // ====================
+  // Token classification
+  // ====================
+
+  bool isLParen() const { return std::get_if<LParenTok>(&data); }
+
+  bool isRParen() const { return std::get_if<RParenTok>(&data); }
+
+  std::optional<std::string_view> getID() const {
+    if (std::get_if<IdTok>(&data)) {
+      // Drop leading '$'.
+      return span.substr(1);
+    }
+    return {};
+  }
+
+  std::optional<std::string_view> getKeyword() const {
+    if (std::get_if<KeywordTok>(&data)) {
+      return span;
+    }
+    return {};
+  }
+  std::optional<uint64_t> getU64() const;
+  std::optional<int64_t> getS64() const;
+  std::optional<uint64_t> getI64() const;
+  std::optional<uint32_t> getU32() const;
+  std::optional<int32_t> getS32() const;
+  std::optional<uint32_t> getI32() const;
+  std::optional<double> getF64() const;
+  std::optional<float> getF32() const;
+  std::optional<std::string_view> getString() const;
+
   bool operator==(const Token&) const;
   friend std::ostream& operator<<(std::ostream& os, const Token&);
 };
@@ -131,7 +164,12 @@ public:
   // The end sentinel.
   Lexer() = default;
 
-  Lexer(std::string_view buffer) : buffer(buffer) {
+  Lexer(std::string_view buffer) : buffer(buffer) { setIndex(0); }
+
+  size_t getIndex() { return index; }
+
+  void setIndex(size_t i) {
+    index = i;
     skipSpace();
     lexToken();
     skipSpace();
@@ -171,6 +209,7 @@ public:
   Lexer end() { return Lexer(); }
 
   TextPos position(const char* c);
+  TextPos position(size_t i) { return position(buffer.data() + i); }
   TextPos position(std::string_view span) { return position(span.data()); }
   TextPos position(Token tok) { return position(tok.span); }
 
@@ -181,4 +220,4 @@ private:
 
 } // namespace wasm::WATParser
 
-#endif // wasm_wat_parser_h
+#endif // wasm_wat_lexer_h

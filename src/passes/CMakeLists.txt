@@ -38,6 +38,7 @@ set(passes_SOURCES
   FuncCastEmulation.cpp
   GenerateDynCalls.cpp
   GlobalRefining.cpp
+  GlobalStructInference.cpp
   GlobalTypeOptimization.cpp
   Heap2Local.cpp
   I64ToI32Lowering.cpp
@@ -95,6 +96,7 @@ set(passes_SOURCES
   SimplifyGlobals.cpp
   SimplifyLocals.cpp
   Souperify.cpp
+  SpillPointers.cpp
   StackCheck.cpp
   SSAify.cpp
   Untee.cpp
