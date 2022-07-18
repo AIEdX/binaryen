@@ -106,6 +106,21 @@ public:
     return seg;
   }
 
+  static std::unique_ptr<DataSegment>
+  makeDataSegment(Name name = "",
+                  bool isPassive = false,
+                  Expression* offset = nullptr,
+                  const char* init = "",
+                  Address size = 0) {
+    auto seg = std::make_unique<DataSegment>();
+    seg->name = name;
+    seg->isPassive = isPassive;
+    seg->offset = offset;
+    seg->data.resize(size);
+    std::copy_n(init, size, seg->data.begin());
+    return seg;
+  }
+
   static std::unique_ptr<Export>
   makeExport(Name name, Name value, ExternalKind kind) {
     auto export_ = std::make_unique<Export>();
@@ -971,6 +986,108 @@ public:
     auto* ret = wasm.allocator.alloc<RefAs>();
     ret->op = op;
     ret->value = value;
+    ret->finalize();
+    return ret;
+  }
+  StringNew*
+  makeStringNew(StringNewOp op, Expression* ptr, Expression* length) {
+    auto* ret = wasm.allocator.alloc<StringNew>();
+    ret->op = op;
+    ret->ptr = ptr;
+    ret->length = length;
+    ret->finalize();
+    return ret;
+  }
+  StringConst* makeStringConst(Name string) {
+    auto* ret = wasm.allocator.alloc<StringConst>();
+    ret->string = string;
+    ret->finalize();
+    return ret;
+  }
+  StringMeasure* makeStringMeasure(StringMeasureOp op, Expression* ref) {
+    auto* ret = wasm.allocator.alloc<StringMeasure>();
+    ret->op = op;
+    ret->ref = ref;
+    ret->finalize();
+    return ret;
+  }
+  StringEncode*
+  makeStringEncode(StringEncodeOp op, Expression* ref, Expression* ptr) {
+    auto* ret = wasm.allocator.alloc<StringEncode>();
+    ret->op = op;
+    ret->ref = ref;
+    ret->ptr = ptr;
+    ret->finalize();
+    return ret;
+  }
+  StringConcat* makeStringConcat(Expression* left, Expression* right) {
+    auto* ret = wasm.allocator.alloc<StringConcat>();
+    ret->left = left;
+    ret->right = right;
+    ret->finalize();
+    return ret;
+  }
+  StringEq* makeStringEq(Expression* left, Expression* right) {
+    auto* ret = wasm.allocator.alloc<StringEq>();
+    ret->left = left;
+    ret->right = right;
+    ret->finalize();
+    return ret;
+  }
+  StringAs* makeStringAs(StringAsOp op, Expression* ref) {
+    auto* ret = wasm.allocator.alloc<StringAs>();
+    ret->op = op;
+    ret->ref = ref;
+    ret->finalize();
+    return ret;
+  }
+  StringWTF8Advance*
+  makeStringWTF8Advance(Expression* ref, Expression* pos, Expression* bytes) {
+    auto* ret = wasm.allocator.alloc<StringWTF8Advance>();
+    ret->ref = ref;
+    ret->pos = pos;
+    ret->bytes = bytes;
+    ret->finalize();
+    return ret;
+  }
+  StringWTF16Get* makeStringWTF16Get(Expression* ref, Expression* pos) {
+    auto* ret = wasm.allocator.alloc<StringWTF16Get>();
+    ret->ref = ref;
+    ret->pos = pos;
+    ret->finalize();
+    return ret;
+  }
+  StringIterNext* makeStringIterNext(Expression* ref) {
+    auto* ret = wasm.allocator.alloc<StringIterNext>();
+    ret->ref = ref;
+    ret->finalize();
+    return ret;
+  }
+  StringIterMove*
+  makeStringIterMove(StringIterMoveOp op, Expression* ref, Expression* num) {
+    auto* ret = wasm.allocator.alloc<StringIterMove>();
+    ret->op = op;
+    ret->ref = ref;
+    ret->num = num;
+    ret->finalize();
+    return ret;
+  }
+  StringSliceWTF* makeStringSliceWTF(StringSliceWTFOp op,
+                                     Expression* ref,
+                                     Expression* start,
+                                     Expression* end) {
+    auto* ret = wasm.allocator.alloc<StringSliceWTF>();
+    ret->op = op;
+    ret->ref = ref;
+    ret->start = start;
+    ret->end = end;
+    ret->finalize();
+    return ret;
+  }
+  StringSliceIter* makeStringSliceIter(Expression* ref, Expression* num) {
+    auto* ret = wasm.allocator.alloc<StringSliceIter>();
+    ret->ref = ref;
+    ret->num = num;
     ret->finalize();
     return ret;
   }

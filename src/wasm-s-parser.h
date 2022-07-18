@@ -134,6 +134,7 @@ class SExpressionWasmBuilder {
   int tableCounter = 0;
   int elemCounter = 0;
   int memoryCounter = 0;
+  int dataCounter = 0;
   // we need to know function return types before we parse their contents
   std::map<Name, HeapType> functionTypes;
   std::unordered_map<cashew::IString, Index> debugInfoFileIndices;
@@ -302,6 +303,19 @@ private:
   Expression* makeArrayLen(Element& s);
   Expression* makeArrayCopy(Element& s);
   Expression* makeRefAs(Element& s, RefAsOp op);
+  Expression* makeStringNew(Element& s, StringNewOp op);
+  Expression* makeStringConst(Element& s);
+  Expression* makeStringMeasure(Element& s, StringMeasureOp op);
+  Expression* makeStringEncode(Element& s, StringEncodeOp op);
+  Expression* makeStringConcat(Element& s);
+  Expression* makeStringEq(Element& s);
+  Expression* makeStringAs(Element& s, StringAsOp op);
+  Expression* makeStringWTF8Advance(Element& s);
+  Expression* makeStringWTF16Get(Element& s);
+  Expression* makeStringIterNext(Element& s);
+  Expression* makeStringIterMove(Element& s, StringIterMoveOp op);
+  Expression* makeStringSliceWTF(Element& s, StringSliceWTFOp op);
+  Expression* makeStringSliceIter(Element& s);
 
   // Helper functions
   Type parseOptionalResultType(Element& s, Index& i);
@@ -320,8 +334,12 @@ private:
   void stringToBinary(const char* input, size_t size, std::vector<char>& data);
   void parseMemory(Element& s, bool preParseImport = false);
   void parseData(Element& s);
-  void parseInnerData(
-    Element& s, Index i, Name name, Expression* offset, bool isPassive);
+  void parseInnerData(Element& s,
+                      Index i,
+                      Name name,
+                      bool hasExplicitName,
+                      Expression* offset,
+                      bool isPassive);
   void parseExport(Element& s);
   void parseImport(Element& s);
   void parseGlobal(Element& s, bool preParseImport = false);

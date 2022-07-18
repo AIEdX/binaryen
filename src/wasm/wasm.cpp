@@ -50,6 +50,7 @@ const char* Memory64Feature = "memory64";
 const char* TypedFunctionReferencesFeature = "typed-function-references";
 const char* RelaxedSIMDFeature = "relaxed-simd";
 const char* ExtendedConstFeature = "extended-const";
+const char* StringsFeature = "strings";
 } // namespace UserSections
 } // namespace BinaryConsts
 
@@ -1173,6 +1174,118 @@ void RefAs::finalize() {
   }
 }
 
+void StringNew::finalize() {
+  if (ptr->type == Type::unreachable || length->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type(HeapType::string, NonNullable);
+  }
+}
+
+void StringConst::finalize() { type = Type(HeapType::string, NonNullable); }
+
+void StringMeasure::finalize() {
+  if (ref->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringEncode::finalize() {
+  if (ref->type == Type::unreachable || ptr->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringConcat::finalize() {
+  if (left->type == Type::unreachable || right->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type(HeapType::string, NonNullable);
+  }
+}
+
+void StringEq::finalize() {
+  if (left->type == Type::unreachable || right->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringAs::finalize() {
+  if (ref->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    switch (op) {
+      case StringAsWTF8:
+        type = Type(HeapType::stringview_wtf8, NonNullable);
+        break;
+      case StringAsWTF16:
+        type = Type(HeapType::stringview_wtf16, NonNullable);
+        break;
+      case StringAsIter:
+        type = Type(HeapType::stringview_iter, NonNullable);
+        break;
+      default:
+        WASM_UNREACHABLE("bad string.as");
+    }
+  }
+}
+
+void StringWTF8Advance::finalize() {
+  if (ref->type == Type::unreachable || pos->type == Type::unreachable ||
+      bytes->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringWTF16Get::finalize() {
+  if (ref->type == Type::unreachable || pos->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringIterNext::finalize() {
+  if (ref->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringIterMove::finalize() {
+  if (ref->type == Type::unreachable || num->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::i32;
+  }
+}
+
+void StringSliceWTF::finalize() {
+  if (ref->type == Type::unreachable || start->type == Type::unreachable ||
+      end->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type(HeapType::string, NonNullable);
+  }
+}
+
+void StringSliceIter::finalize() {
+  if (ref->type == Type::unreachable || num->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type(HeapType::string, NonNullable);
+  }
+}
+
 size_t Function::getNumParams() { return getParams().size(); }
 
 size_t Function::getNumVars() { return vars.size(); }
@@ -1275,6 +1388,10 @@ ElementSegment* Module::getElementSegment(Name name) {
   return getModuleElement(elementSegmentsMap, name, "getElementSegment");
 }
 
+DataSegment* Module::getDataSegment(Name name) {
+  return getModuleElement(dataSegmentsMap, name, "getDataSegment");
+}
+
 Global* Module::getGlobal(Name name) {
   return getModuleElement(globalsMap, name, "getGlobal");
 }
@@ -1306,6 +1423,10 @@ Table* Module::getTableOrNull(Name name) {
 
 ElementSegment* Module::getElementSegmentOrNull(Name name) {
   return getModuleElementOrNull(elementSegmentsMap, name);
+}
+
+DataSegment* Module::getDataSegmentOrNull(Name name) {
+  return getModuleElementOrNull(dataSegmentsMap, name);
 }
 
 Global* Module::getGlobalOrNull(Name name) {
@@ -1383,6 +1504,11 @@ Module::addElementSegment(std::unique_ptr<ElementSegment>&& curr) {
     elementSegments, elementSegmentsMap, std::move(curr), "addElementSegment");
 }
 
+DataSegment* Module::addDataSegment(std::unique_ptr<DataSegment>&& curr) {
+  return addModuleElement(
+    dataSegments, dataSegmentsMap, std::move(curr), "addDataSegment");
+}
+
 Global* Module::addGlobal(std::unique_ptr<Global>&& curr) {
   return addModuleElement(globals, globalsMap, std::move(curr), "addGlobal");
 }
@@ -1415,6 +1541,9 @@ void Module::removeTable(Name name) {
 }
 void Module::removeElementSegment(Name name) {
   removeModuleElement(elementSegments, elementSegmentsMap, name);
+}
+void Module::removeDataSegment(Name name) {
+  removeModuleElement(dataSegments, dataSegmentsMap, name);
 }
 void Module::removeGlobal(Name name) {
   removeModuleElement(globals, globalsMap, name);
@@ -1449,6 +1578,9 @@ void Module::removeTables(std::function<bool(Table*)> pred) {
 void Module::removeElementSegments(std::function<bool(ElementSegment*)> pred) {
   removeModuleElements(elementSegments, elementSegmentsMap, pred);
 }
+void Module::removeDataSegments(std::function<bool(DataSegment*)> pred) {
+  removeModuleElements(dataSegments, dataSegmentsMap, pred);
+}
 void Module::removeGlobals(std::function<bool(Global*)> pred) {
   removeModuleElements(globals, globalsMap, pred);
 }
@@ -1472,6 +1604,10 @@ void Module::updateMaps() {
   elementSegmentsMap.clear();
   for (auto& curr : elementSegments) {
     elementSegmentsMap[curr->name] = curr.get();
+  }
+  dataSegmentsMap.clear();
+  for (auto& curr : dataSegments) {
+    dataSegmentsMap[curr->name] = curr.get();
   }
   globalsMap.clear();
   for (auto& curr : globals) {

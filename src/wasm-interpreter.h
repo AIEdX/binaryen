@@ -1955,6 +1955,45 @@ public:
     }
     return value;
   }
+  Flow visitStringNew(StringNew* curr) {
+    WASM_UNREACHABLE("unimplemented string.new");
+  }
+  Flow visitStringConst(StringConst* curr) {
+    WASM_UNREACHABLE("unimplemented string.const");
+  }
+  Flow visitStringMeasure(StringMeasure* curr) {
+    WASM_UNREACHABLE("unimplemented string.measure");
+  }
+  Flow visitStringEncode(StringEncode* curr) {
+    WASM_UNREACHABLE("unimplemented string.encode");
+  }
+  Flow visitStringConcat(StringConcat* curr) {
+    WASM_UNREACHABLE("unimplemented string.concat");
+  }
+  Flow visitStringEq(StringEq* curr) {
+    WASM_UNREACHABLE("unimplemented string.eq");
+  }
+  Flow visitStringAs(StringAs* curr) {
+    WASM_UNREACHABLE("unimplemented string.as");
+  }
+  Flow visitStringWTF8Advance(StringWTF8Advance* curr) {
+    WASM_UNREACHABLE("unimplemented stringview_adjust*");
+  }
+  Flow visitStringWTF16Get(StringWTF16Get* curr) {
+    WASM_UNREACHABLE("unimplemented stringview_adjust*");
+  }
+  Flow visitStringIterNext(StringIterNext* curr) {
+    WASM_UNREACHABLE("unimplemented stringview_adjust*");
+  }
+  Flow visitStringIterMove(StringIterMove* curr) {
+    WASM_UNREACHABLE("unimplemented stringview_adjust*");
+  }
+  Flow visitStringSliceWTF(StringSliceWTF* curr) {
+    WASM_UNREACHABLE("unimplemented stringview_adjust*");
+  }
+  Flow visitStringSliceIter(StringSliceIter* curr) {
+    WASM_UNREACHABLE("unimplemented stringview_adjust*");
+  }
 
   virtual void trap(const char* why) { WASM_UNREACHABLE("unimp"); }
 
@@ -2604,19 +2643,18 @@ private:
     offset.finalize();
 
     // apply active memory segments
-    for (size_t i = 0, e = wasm.memory.segments.size(); i < e; ++i) {
-      Memory::Segment& segment = wasm.memory.segments[i];
-      if (segment.isPassive) {
+    for (size_t i = 0, e = wasm.dataSegments.size(); i < e; ++i) {
+      auto& segment = wasm.dataSegments[i];
+      if (segment->isPassive) {
         continue;
       }
-
       Const size;
-      size.value = Literal(uint32_t(segment.data.size()));
+      size.value = Literal(uint32_t(segment->data.size()));
       size.finalize();
 
       MemoryInit init;
       init.segment = i;
-      init.dest = segment.offset;
+      init.dest = segment->offset;
       init.offset = &offset;
       init.size = &size;
       init.finalize();
@@ -3303,8 +3341,8 @@ public:
     NOTE_EVAL1(offset);
     NOTE_EVAL1(size);
 
-    assert(curr->segment < wasm.memory.segments.size());
-    Memory::Segment& segment = wasm.memory.segments[curr->segment];
+    assert(curr->segment < wasm.dataSegments.size());
+    auto& segment = wasm.dataSegments[curr->segment];
 
     Address destVal(dest.getSingleValue().getUnsigned());
     Address offsetVal(uint32_t(offset.getSingleValue().geti32()));
@@ -3313,7 +3351,7 @@ public:
     if (offsetVal + sizeVal > 0 && droppedSegments.count(curr->segment)) {
       trap("out of bounds segment access in memory.init");
     }
-    if ((uint64_t)offsetVal + sizeVal > segment.data.size()) {
+    if ((uint64_t)offsetVal + sizeVal > segment->data.size()) {
       trap("out of bounds segment access in memory.init");
     }
     auto* inst = getMemoryInstance();
@@ -3324,7 +3362,7 @@ public:
       Literal addr(destVal + i);
       inst->externalInterface->store8(
         inst->getFinalAddressWithoutOffset(addr, 1),
-        segment.data[offsetVal + i]);
+        segment->data[offsetVal + i]);
     }
     return {};
   }

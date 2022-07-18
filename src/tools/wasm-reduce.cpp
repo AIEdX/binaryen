@@ -752,20 +752,14 @@ struct Reducer
 
   // TODO: bisection on segment shrinking?
 
-  void visitMemory(Memory* curr) {
-    std::cerr << "|    try to simplify memory\n";
-
+  void visitDataSegment(DataSegment* curr) {
     // try to reduce to first function. first, shrink segment elements.
     // while we are shrinking successfully, keep going exponentially.
     bool shrank = false;
-    for (auto& segment : curr->segments) {
-      shrank = shrinkByReduction(&segment, 2);
-    }
+    shrank = shrinkByReduction(curr, 2);
     // the "opposite" of shrinking: copy a 'zero' element
-    for (auto& segment : curr->segments) {
-      reduceByZeroing(
-        &segment, 0, [](char item) { return item == 0; }, 2, shrank);
-    }
+    reduceByZeroing(
+      curr, 0, [](char item) { return item == 0; }, 2, shrank);
   }
 
   template<typename T, typename U, typename C>
@@ -947,6 +941,7 @@ struct Reducer
     // process things here, we may replace the module, so we should never again
     // refer to curr.
     assert(curr == module.get());
+    WASM_UNUSED(curr);
     curr = nullptr;
 
     // Reduction of entire functions at a time is very effective, and we do it

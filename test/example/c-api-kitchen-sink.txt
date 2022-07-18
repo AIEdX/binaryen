@@ -1,17 +1,20 @@
-  // BinaryenTypeNone: 0
-  // BinaryenTypeUnreachable: 1
-  // BinaryenTypeInt32: 2
-  // BinaryenTypeInt64: 3
-  // BinaryenTypeFloat32: 4
-  // BinaryenTypeFloat64: 5
-  // BinaryenTypeVec128: 6
-  // BinaryenTypeFuncref: 7
-  // BinaryenTypeExternref: 8
-  // BinaryenTypeAnyref: 8
-  // BinaryenTypeEqref: 9
-  // BinaryenTypeI31ref: 10
-  // BinaryenTypeDataref: 11
-  // BinaryenTypeAuto: -1
+BinaryenTypeNone: 0
+BinaryenTypeUnreachable: 1
+BinaryenTypeInt32: 2
+BinaryenTypeInt64: 3
+BinaryenTypeFloat32: 4
+BinaryenTypeFloat64: 5
+BinaryenTypeVec128: 6
+BinaryenTypeFuncref: 7
+BinaryenTypeExternref: 8
+BinaryenTypeAnyref: 8
+BinaryenTypeEqref: 9
+BinaryenTypeI31ref: 10
+BinaryenTypeDataref: 11
+BinaryenTypeAuto: -1
+BinaryenPackedTypeNotPacked: 0
+BinaryenPackedTypeInt8: 1
+BinaryenPackedTypeInt16: 2
 BinaryenFeatureMVP: 0
 BinaryenFeatureAtomics: 1
 BinaryenFeatureBulkMemory: 16
@@ -28,7 +31,7 @@ BinaryenFeatureMemory64: 2048
 BinaryenFeatureTypedFunctionReferences: 4096
 BinaryenFeatureRelaxedSIMD: 16384
 BinaryenFeatureExtendedConst: 32768
-BinaryenFeatureAll: 57343
+BinaryenFeatureAll: 122879
 (f32.neg
  (f32.const -33.61199951171875)
 )
@@ -2700,3 +2703,6 @@ optimized:
   (i32.const 4)
  )
 )
+BinaryenTypeSystemEquirecursive: 0
+BinaryenTypeSystemNominal: 1
+BinaryenTypeSystemIsorecursive: 2

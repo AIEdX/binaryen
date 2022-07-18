@@ -732,6 +732,59 @@ private:
       // we keep the code here simpler, but it does mean another optimization
       // cycle may be needed in some cases.
     }
+    void visitStringNew(StringNew* curr) {}
+    void visitStringConst(StringConst* curr) {}
+    void visitStringMeasure(StringMeasure* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+    }
+    void visitStringEncode(StringEncode* curr) {
+      // traps when ref is null or we write out of bounds.
+      parent.implicitTrap = true;
+    }
+    void visitStringConcat(StringConcat* curr) {
+      // traps when an input is null.
+      parent.implicitTrap = true;
+    }
+    void visitStringEq(StringEq* curr) {}
+    void visitStringAs(StringAs* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+    }
+    void visitStringWTF8Advance(StringWTF8Advance* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+    }
+    void visitStringWTF16Get(StringWTF16Get* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+    }
+    void visitStringIterNext(StringIterNext* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+      // modifies state in the iterator. we model that as accessing heap memory
+      // in an array atm TODO consider adding a new effect type for this (we
+      // added one for arrays because struct/array operations often interleave,
+      // say with vtable accesses, but it's not clear adding overhead to this
+      // class is worth it for string iters)
+      parent.readsArray = true;
+      parent.writesArray = true;
+    }
+    void visitStringIterMove(StringIterMove* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+      // see StringIterNext.
+      parent.readsArray = true;
+      parent.writesArray = true;
+    }
+    void visitStringSliceWTF(StringSliceWTF* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+    }
+    void visitStringSliceIter(StringSliceIter* curr) {
+      // traps when ref is null.
+      parent.implicitTrap = true;
+    }
   };
 
 public:

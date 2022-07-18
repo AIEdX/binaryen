@@ -1184,6 +1184,18 @@ Type SExpressionWasmBuilder::stringToType(const char* str,
   if (strncmp(str, "dataref", 7) == 0 && (prefix || str[7] == 0)) {
     return Type::dataref;
   }
+  if (strncmp(str, "stringref", 9) == 0 && (prefix || str[9] == 0)) {
+    return Type(HeapType::string, Nullable);
+  }
+  if (strncmp(str, "stringview_wtf8", 15) == 0 && (prefix || str[15] == 0)) {
+    return Type(HeapType::stringview_wtf8, Nullable);
+  }
+  if (strncmp(str, "stringview_wtf16", 16) == 0 && (prefix || str[16] == 0)) {
+    return Type(HeapType::stringview_wtf16, Nullable);
+  }
+  if (strncmp(str, "stringview_iter", 15) == 0 && (prefix || str[15] == 0)) {
+    return Type(HeapType::stringview_iter, Nullable);
+  }
   if (allowError) {
     return Type::none;
   }
@@ -1221,6 +1233,20 @@ HeapType SExpressionWasmBuilder::stringToHeapType(const char* str,
     if (str[1] == 'a' && str[2] == 't' && str[3] == 'a' &&
         (prefix || str[4] == 0)) {
       return HeapType::data;
+    }
+  }
+  if (str[0] == 's') {
+    if (strncmp(str, "string", 6) == 0 && (prefix || str[6] == 0)) {
+      return HeapType::string;
+    }
+    if (strncmp(str, "stringview_wtf8", 15) == 0 && (prefix || str[15] == 0)) {
+      return HeapType::stringview_wtf8;
+    }
+    if (strncmp(str, "stringview_wtf16", 16) == 0 && (prefix || str[16] == 0)) {
+      return HeapType::stringview_wtf16;
+    }
+    if (strncmp(str, "stringview_iter", 15) == 0 && (prefix || str[15] == 0)) {
+      return HeapType::stringview_iter;
     }
   }
   throw ParseException(std::string("invalid wasm heap type: ") + str);
@@ -2909,6 +2935,106 @@ Expression* SExpressionWasmBuilder::makeRefAs(Element& s, RefAsOp op) {
   return Builder(wasm).makeRefAs(op, parseExpression(s[1]));
 }
 
+Expression* SExpressionWasmBuilder::makeStringNew(Element& s, StringNewOp op) {
+  size_t i = 1;
+  if (op == StringNewWTF8) {
+    const char* str = s[i++]->c_str();
+    if (strncmp(str, "utf8", 4) == 0) {
+      op = StringNewUTF8;
+    } else if (strncmp(str, "wtf8", 4) == 0) {
+      op = StringNewWTF8;
+    } else if (strncmp(str, "replace", 7) == 0) {
+      op = StringNewReplace;
+    } else {
+      throw ParseException("bad string.new op", s.line, s.col);
+    }
+  }
+  return Builder(wasm).makeStringNew(
+    op, parseExpression(s[i]), parseExpression(s[i + 1]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringConst(Element& s) {
+  return Builder(wasm).makeStringConst(s[1]->str());
+}
+
+Expression* SExpressionWasmBuilder::makeStringMeasure(Element& s,
+                                                      StringMeasureOp op) {
+  size_t i = 1;
+  if (op == StringMeasureWTF8) {
+    const char* str = s[i++]->c_str();
+    if (strncmp(str, "utf8", 4) == 0) {
+      op = StringMeasureUTF8;
+    } else if (strncmp(str, "wtf8", 4) == 0) {
+      op = StringMeasureWTF8;
+    } else {
+      throw ParseException("bad string.new op", s.line, s.col);
+    }
+  }
+  return Builder(wasm).makeStringMeasure(op, parseExpression(s[i]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringEncode(Element& s,
+                                                     StringEncodeOp op) {
+  size_t i = 1;
+  if (op == StringEncodeWTF8) {
+    const char* str = s[i++]->c_str();
+    if (strncmp(str, "utf8", 4) == 0) {
+      op = StringEncodeUTF8;
+    } else if (strncmp(str, "wtf8", 4) == 0) {
+      op = StringEncodeWTF8;
+    } else {
+      throw ParseException("bad string.new op", s.line, s.col);
+    }
+  }
+  return Builder(wasm).makeStringEncode(
+    op, parseExpression(s[i]), parseExpression(s[i + 1]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringConcat(Element& s) {
+  return Builder(wasm).makeStringConcat(parseExpression(s[1]),
+                                        parseExpression(s[2]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringEq(Element& s) {
+  return Builder(wasm).makeStringEq(parseExpression(s[1]),
+                                    parseExpression(s[2]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringAs(Element& s, StringAsOp op) {
+  return Builder(wasm).makeStringAs(op, parseExpression(s[1]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringWTF8Advance(Element& s) {
+  return Builder(wasm).makeStringWTF8Advance(
+    parseExpression(s[1]), parseExpression(s[2]), parseExpression(s[3]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringWTF16Get(Element& s) {
+  return Builder(wasm).makeStringWTF16Get(parseExpression(s[1]),
+                                          parseExpression(s[2]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringIterNext(Element& s) {
+  return Builder(wasm).makeStringIterNext(parseExpression(s[1]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringIterMove(Element& s,
+                                                       StringIterMoveOp op) {
+  return Builder(wasm).makeStringIterMove(
+    op, parseExpression(s[1]), parseExpression(s[2]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringSliceWTF(Element& s,
+                                                       StringSliceWTFOp op) {
+  return Builder(wasm).makeStringSliceWTF(
+    op, parseExpression(s[1]), parseExpression(s[2]), parseExpression(s[3]));
+}
+
+Expression* SExpressionWasmBuilder::makeStringSliceIter(Element& s) {
+  return Builder(wasm).makeStringSliceIter(parseExpression(s[1]),
+                                           parseExpression(s[2]));
+}
+
 // converts an s-expression string representing binary data into an output
 // sequence of raw bytes this appends to data, which may already contain
 // content.
@@ -3038,8 +3164,9 @@ void SExpressionWasmBuilder::parseMemory(Element& s, bool preParseImport) {
       } else {
         offset->set(Literal(int32_t(0)));
       }
-      parseInnerData(inner, j, {}, offset, false);
-      wasm.memory.initial = wasm.memory.segments[0].data.size();
+      parseInnerData(
+        inner, j, Name::fromInt(dataCounter++), false, offset, false);
+      wasm.memory.initial = wasm.dataSegments[0]->data.size();
       return;
     }
   }
@@ -3073,9 +3200,15 @@ void SExpressionWasmBuilder::parseMemory(Element& s, bool preParseImport) {
     if (auto size = strlen(input)) {
       std::vector<char> data;
       stringToBinary(input, size, data);
-      wasm.memory.segments.emplace_back(offset, data.data(), data.size());
+      auto segment = Builder::makeDataSegment(
+        Name::fromInt(dataCounter++), false, offset, data.data(), data.size());
+      segment->hasExplicitName = false;
+      wasm.dataSegments.push_back(std::move(segment));
     } else {
-      wasm.memory.segments.emplace_back(offset, "", 0);
+      auto segment =
+        Builder::makeDataSegment(Name::fromInt(dataCounter++), false, offset);
+      segment->hasExplicitName = false;
+      wasm.dataSegments.push_back(std::move(segment));
     }
     i++;
   }
@@ -3085,13 +3218,15 @@ void SExpressionWasmBuilder::parseData(Element& s) {
   if (!wasm.memory.exists) {
     throw ParseException("data but no memory", s.line, s.col);
   }
+  Index i = 1;
+  Name name = Name::fromInt(dataCounter++);
+  bool hasExplicitName = false;
   bool isPassive = true;
   Expression* offset = nullptr;
-  Index i = 1;
-  Name name;
 
   if (s[i]->isStr() && s[i]->dollared()) {
     name = s[i++]->str();
+    hasExplicitName = true;
   }
 
   if (s[i]->isList()) {
@@ -3112,11 +3247,15 @@ void SExpressionWasmBuilder::parseData(Element& s) {
     isPassive = false;
   }
 
-  parseInnerData(s, i, name, offset, isPassive);
+  parseInnerData(s, i, name, hasExplicitName, offset, isPassive);
 }
 
-void SExpressionWasmBuilder::parseInnerData(
-  Element& s, Index i, Name name, Expression* offset, bool isPassive) {
+void SExpressionWasmBuilder::parseInnerData(Element& s,
+                                            Index i,
+                                            Name name,
+                                            bool hasExplicitName,
+                                            Expression* offset,
+                                            bool isPassive) {
   std::vector<char> data;
   while (i < s.size()) {
     const char* input = s[i++]->c_str();
@@ -3124,8 +3263,10 @@ void SExpressionWasmBuilder::parseInnerData(
       stringToBinary(input, size, data);
     }
   }
-  wasm.memory.segments.emplace_back(
-    name, isPassive, offset, data.data(), data.size());
+  auto curr =
+    Builder::makeDataSegment(name, isPassive, offset, data.data(), data.size());
+  curr->hasExplicitName = hasExplicitName;
+  wasm.dataSegments.push_back(std::move(curr));
 }
 
 void SExpressionWasmBuilder::parseExport(Element& s) {

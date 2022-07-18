@@ -2234,6 +2234,148 @@ void BinaryInstWriter::visitRefAs(RefAs* curr) {
   }
 }
 
+void BinaryInstWriter::visitStringNew(StringNew* curr) {
+  o << int8_t(BinaryConsts::GCPrefix);
+  switch (curr->op) {
+    case StringNewUTF8:
+      o << U32LEB(BinaryConsts::StringNewWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::UTF8);
+      break;
+    case StringNewWTF8:
+      o << U32LEB(BinaryConsts::StringNewWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::WTF8);
+      break;
+    case StringNewReplace:
+      o << U32LEB(BinaryConsts::StringNewWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::Replace);
+      break;
+    case StringNewWTF16:
+      o << U32LEB(BinaryConsts::StringNewWTF16);
+      break;
+    default:
+      WASM_UNREACHABLE("invalid string.new*");
+  }
+}
+
+void BinaryInstWriter::visitStringConst(StringConst* curr) {
+  o << int8_t(BinaryConsts::GCPrefix) << U32LEB(BinaryConsts::StringConst)
+    << U32LEB(parent.getStringIndex(curr->string));
+}
+
+void BinaryInstWriter::visitStringMeasure(StringMeasure* curr) {
+  o << int8_t(BinaryConsts::GCPrefix);
+  switch (curr->op) {
+    case StringMeasureUTF8:
+      o << U32LEB(BinaryConsts::StringMeasureWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::UTF8);
+      break;
+    case StringMeasureWTF8:
+      o << U32LEB(BinaryConsts::StringMeasureWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::WTF8);
+      break;
+    case StringMeasureWTF16:
+      o << U32LEB(BinaryConsts::StringMeasureWTF16);
+      break;
+    case StringMeasureIsUSV:
+      o << U32LEB(BinaryConsts::StringIsUSV);
+      break;
+    default:
+      WASM_UNREACHABLE("invalid string.new*");
+  }
+}
+
+void BinaryInstWriter::visitStringEncode(StringEncode* curr) {
+  o << int8_t(BinaryConsts::GCPrefix);
+  switch (curr->op) {
+    case StringEncodeUTF8:
+      o << U32LEB(BinaryConsts::StringEncodeWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::UTF8);
+      break;
+    case StringEncodeWTF8:
+      o << U32LEB(BinaryConsts::StringEncodeWTF8)
+        << U32LEB(BinaryConsts::StringPolicy::WTF8);
+      break;
+    case StringEncodeWTF16:
+      o << U32LEB(BinaryConsts::StringEncodeWTF16);
+      break;
+    default:
+      WASM_UNREACHABLE("invalid string.new*");
+  }
+}
+
+void BinaryInstWriter::visitStringConcat(StringConcat* curr) {
+  o << int8_t(BinaryConsts::GCPrefix) << U32LEB(BinaryConsts::StringConcat);
+}
+
+void BinaryInstWriter::visitStringEq(StringEq* curr) {
+  o << int8_t(BinaryConsts::GCPrefix) << U32LEB(BinaryConsts::StringEq);
+}
+
+void BinaryInstWriter::visitStringAs(StringAs* curr) {
+  o << int8_t(BinaryConsts::GCPrefix);
+  switch (curr->op) {
+    case StringAsWTF8:
+      o << U32LEB(BinaryConsts::StringAsWTF8);
+      break;
+    case StringAsWTF16:
+      o << U32LEB(BinaryConsts::StringAsWTF16);
+      break;
+    case StringAsIter:
+      o << U32LEB(BinaryConsts::StringAsIter);
+      break;
+    default:
+      WASM_UNREACHABLE("invalid string.as*");
+  }
+}
+
+void BinaryInstWriter::visitStringWTF8Advance(StringWTF8Advance* curr) {
+  o << int8_t(BinaryConsts::GCPrefix)
+    << U32LEB(BinaryConsts::StringViewWTF8Advance);
+}
+
+void BinaryInstWriter::visitStringWTF16Get(StringWTF16Get* curr) {
+  o << int8_t(BinaryConsts::GCPrefix)
+    << U32LEB(BinaryConsts::StringViewWTF16GetCodePoint);
+}
+
+void BinaryInstWriter::visitStringIterNext(StringIterNext* curr) {
+  o << int8_t(BinaryConsts::GCPrefix)
+    << U32LEB(BinaryConsts::StringViewIterNext);
+}
+
+void BinaryInstWriter::visitStringIterMove(StringIterMove* curr) {
+  o << int8_t(BinaryConsts::GCPrefix);
+  switch (curr->op) {
+    case StringIterMoveAdvance:
+      o << U32LEB(BinaryConsts::StringViewIterAdvance);
+      break;
+    case StringIterMoveRewind:
+      o << U32LEB(BinaryConsts::StringViewIterRewind);
+      break;
+    default:
+      WASM_UNREACHABLE("invalid string.move*");
+  }
+}
+
+void BinaryInstWriter::visitStringSliceWTF(StringSliceWTF* curr) {
+  o << int8_t(BinaryConsts::GCPrefix);
+  switch (curr->op) {
+    case StringSliceWTF8:
+      o << U32LEB(BinaryConsts::StringViewWTF8Slice);
+      break;
+    case StringSliceWTF16:
+      o << U32LEB(BinaryConsts::StringViewWTF16Slice);
+      break;
+    default:
+      WASM_UNREACHABLE("invalid string.move*");
+  }
+}
+
+void BinaryInstWriter::visitStringSliceIter(StringSliceIter* curr) {
+  o << int8_t(BinaryConsts::GCPrefix)
+    << U32LEB(BinaryConsts::StringViewIterSlice);
+}
+
 void BinaryInstWriter::emitScopeEnd(Expression* curr) {
   assert(!breakStack.empty());
   breakStack.pop_back();
@@ -2280,6 +2422,29 @@ void BinaryInstWriter::mapLocalsAndEmitHeader() {
     }
   }
   countScratchLocals();
+
+  if (parent.getModule()->features.hasReferenceTypes()) {
+    // Sort local types in a way that keeps all MVP types together and all
+    // reference types together. E.g. it is helpful to avoid a block of i32s in
+    // between blocks of different reference types, since clearing out reference
+    // types may require different work.
+    //
+    // See https://github.com/WebAssembly/binaryen/issues/4773
+    //
+    // In order to decide whether to put MVP types or reference types first,
+    // look at the type of the first local. In an optimized binary we will have
+    // sorted the locals by frequency of uses, so this way we'll keep the most
+    // commonly-used local at the top, which should work well in many cases.
+    bool refsFirst = !localTypes.empty() && localTypes[0].isRef();
+    std::stable_sort(localTypes.begin(), localTypes.end(), [&](Type a, Type b) {
+      if (refsFirst) {
+        return a.isRef() && !b.isRef();
+      } else {
+        return !a.isRef() && b.isRef();
+      }
+    });
+  }
+
   std::unordered_map<Type, size_t> currLocalsByType;
   for (Index i = func->getVarIndexBase(); i < func->getNumLocals(); i++) {
     Index j = 0;

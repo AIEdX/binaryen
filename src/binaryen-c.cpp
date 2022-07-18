@@ -76,9 +76,8 @@ BinaryenLiteral toBinaryenLiteral(Literal x) {
       assert(x.isNull() && "unexpected non-null reference type literal");
       break;
     case Type::i31ref:
-      WASM_UNREACHABLE("TODO: i31ref");
     case Type::dataref:
-      WASM_UNREACHABLE("TODO: dataref");
+      WASM_UNREACHABLE("TODO: reftypes");
     case Type::none:
     case Type::unreachable:
       WASM_UNREACHABLE("unexpected type");
@@ -104,9 +103,8 @@ Literal fromBinaryenLiteral(BinaryenLiteral x) {
     case Type::eqref:
       return Literal::makeNull(Type(x.type).getHeapType());
     case Type::i31ref:
-      WASM_UNREACHABLE("TODO: i31ref");
     case Type::dataref:
-      WASM_UNREACHABLE("TODO: dataref");
+      WASM_UNREACHABLE("TODO: reftypes");
     case Type::none:
     case Type::unreachable:
       WASM_UNREACHABLE("unexpected type");
@@ -173,6 +171,51 @@ WASM_DEPRECATED BinaryenType BinaryenInt64(void) { return Type::i64; }
 WASM_DEPRECATED BinaryenType BinaryenFloat32(void) { return Type::f32; }
 WASM_DEPRECATED BinaryenType BinaryenFloat64(void) { return Type::f64; }
 WASM_DEPRECATED BinaryenType BinaryenUndefined(void) { return uint32_t(-1); }
+
+// Packed types
+
+BinaryenPackedType BinaryenPackedTypeNotPacked(void) {
+  return Field::PackedType::not_packed;
+}
+BinaryenPackedType BinaryenPackedTypeInt8(void) {
+  return Field::PackedType::i8;
+}
+BinaryenPackedType BinaryenPackedTypeInt16(void) {
+  return Field::PackedType::i16;
+}
+
+// Heap types
+
+BinaryenHeapType BinaryenTypeGetHeapType(BinaryenType type) {
+  return Type(type).getHeapType().getID();
+}
+bool BinaryenTypeIsNullable(BinaryenType type) {
+  return Type(type).isNullable();
+}
+BinaryenType BinaryenTypeFromHeapType(BinaryenHeapType heapType,
+                                      bool nullable) {
+  return Type(HeapType(heapType),
+              nullable ? Nullability::Nullable : Nullability::NonNullable)
+    .getID();
+}
+
+// TypeSystem
+
+BinaryenTypeSystem BinaryenTypeSystemEquirecursive() {
+  return static_cast<BinaryenTypeSystem>(TypeSystem::Equirecursive);
+}
+BinaryenTypeSystem BinaryenTypeSystemNominal() {
+  return static_cast<BinaryenTypeSystem>(TypeSystem::Nominal);
+}
+BinaryenTypeSystem BinaryenTypeSystemIsorecursive() {
+  return static_cast<BinaryenTypeSystem>(TypeSystem::Isorecursive);
+}
+BinaryenTypeSystem BinaryenGetTypeSystem() {
+  return BinaryenTypeSystem(getTypeSystem());
+}
+void BinaryenSetTypeSystem(BinaryenTypeSystem typeSystem) {
+  setTypeSystem(TypeSystem(typeSystem));
+}
 
 // Expression ids
 
@@ -3768,23 +3811,25 @@ void BinaryenSetMemory(BinaryenModuleRef module,
     wasm->addExport(memoryExport.release());
   }
   for (BinaryenIndex i = 0; i < numSegments; i++) {
-    wasm->memory.segments.emplace_back(Name(),
-                                       segmentPassive[i],
-                                       (Expression*)segmentOffsets[i],
-                                       segments[i],
-                                       segmentSizes[i]);
+    auto curr = Builder::makeDataSegment(Name::fromInt(i),
+                                         segmentPassive[i],
+                                         (Expression*)segmentOffsets[i],
+                                         segments[i],
+                                         segmentSizes[i]);
+    curr->hasExplicitName = false;
+    wasm->dataSegments.push_back(std::move(curr));
   }
 }
 
 // Memory segments
 
 uint32_t BinaryenGetNumMemorySegments(BinaryenModuleRef module) {
-  return ((Module*)module)->memory.segments.size();
+  return ((Module*)module)->dataSegments.size();
 }
 uint32_t BinaryenGetMemorySegmentByteOffset(BinaryenModuleRef module,
                                             BinaryenIndex id) {
   auto* wasm = (Module*)module;
-  if (wasm->memory.segments.size() <= id) {
+  if (wasm->dataSegments.size() <= id) {
     Fatal() << "invalid segment id.";
   }
 
@@ -3797,13 +3842,13 @@ uint32_t BinaryenGetMemorySegmentByteOffset(BinaryenModuleRef module,
     return false;
   };
 
-  const auto& segment = wasm->memory.segments[id];
+  const auto& segment = wasm->dataSegments[id];
 
   int64_t ret;
-  if (globalOffset(segment.offset, ret)) {
+  if (globalOffset(segment->offset, ret)) {
     return ret;
   }
-  if (auto* get = segment.offset->dynCast<GlobalGet>()) {
+  if (auto* get = segment->offset->dynCast<GlobalGet>()) {
     Global* global = wasm->getGlobal(get->name);
     if (globalOffset(global->init, ret)) {
       return ret;
@@ -3846,29 +3891,29 @@ bool BinaryenMemoryIsShared(BinaryenModuleRef module) {
 }
 size_t BinaryenGetMemorySegmentByteLength(BinaryenModuleRef module,
                                           BinaryenIndex id) {
-  const auto& segments = ((Module*)module)->memory.segments;
+  const auto& segments = ((Module*)module)->dataSegments;
   if (segments.size() <= id) {
     Fatal() << "invalid segment id.";
   }
-  return segments[id].data.size();
+  return segments[id]->data.size();
 }
 bool BinaryenGetMemorySegmentPassive(BinaryenModuleRef module,
                                      BinaryenIndex id) {
-  const auto& segments = ((Module*)module)->memory.segments;
+  const auto& segments = ((Module*)module)->dataSegments;
   if (segments.size() <= id) {
     Fatal() << "invalid segment id.";
   }
-  return segments[id].isPassive;
+  return segments[id]->isPassive;
 }
 void BinaryenCopyMemorySegmentData(BinaryenModuleRef module,
                                    BinaryenIndex id,
                                    char* buffer) {
-  const auto& segments = ((Module*)module)->memory.segments;
+  const auto& segments = ((Module*)module)->dataSegments;
   if (segments.size() <= id) {
     Fatal() << "invalid segment id.";
   }
   const auto& segment = segments[id];
-  std::copy(segment.data.cbegin(), segment.data.cend(), buffer);
+  std::copy(segment->data.cbegin(), segment->data.cend(), buffer);
 }
 
 // Start function. One per module
