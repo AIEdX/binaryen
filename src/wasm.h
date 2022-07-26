@@ -584,10 +584,16 @@ enum BrOnOp {
 };
 
 enum StringNewOp {
+  // Linear memory
   StringNewUTF8,
   StringNewWTF8,
   StringNewReplace,
-  StringNewWTF16
+  StringNewWTF16,
+  // GC
+  StringNewUTF8Array,
+  StringNewWTF8Array,
+  StringNewReplaceArray,
+  StringNewWTF16Array,
 };
 
 enum StringMeasureOp {
@@ -595,12 +601,16 @@ enum StringMeasureOp {
   StringMeasureWTF8,
   StringMeasureWTF16,
   StringMeasureIsUSV,
+  StringMeasureWTF16View,
 };
 
 enum StringEncodeOp {
   StringEncodeUTF8,
   StringEncodeWTF8,
   StringEncodeWTF16,
+  StringEncodeUTF8Array,
+  StringEncodeWTF8Array,
+  StringEncodeWTF16Array,
 };
 
 enum StringAsOp {
@@ -1699,8 +1709,12 @@ public:
 
   StringNewOp op;
 
+  // In linear memory variations this is the pointer in linear memory. In the
+  // GC variations this is an Array.
   Expression* ptr;
-  Expression* length;
+
+  // Used only in linear memory variations.
+  Expression* length = nullptr;
 
   void finalize();
 };
@@ -1735,7 +1749,14 @@ public:
   StringEncodeOp op;
 
   Expression* ref;
+
+  // In linear memory variations this is the pointer in linear memory. In the
+  // GC variations this is an Array.
   Expression* ptr;
+
+  // Used only in GC variations, where it is the index in |ptr| to start
+  // encoding from.
+  Expression* start = nullptr;
 
   void finalize();
 };
@@ -2025,11 +2046,13 @@ class ElementSegment : public Named {
 public:
   Name table;
   Expression* offset;
-  Type type = Type::funcref;
+  Type type = Type(HeapType::func, Nullable);
   std::vector<Expression*> data;
 
   ElementSegment() = default;
-  ElementSegment(Name table, Expression* offset, Type type = Type::funcref)
+  ElementSegment(Name table,
+                 Expression* offset,
+                 Type type = Type(HeapType::func, Nullable))
     : table(table), offset(offset), type(type) {}
   ElementSegment(Name table,
                  Expression* offset,
@@ -2049,7 +2072,7 @@ public:
 
   Address initial = 0;
   Address max = kMaxSize;
-  Type type = Type::funcref;
+  Type type = Type(HeapType::func, Nullable);
 
   bool hasMax() { return max != kUnlimitedSize; }
   void clear() {

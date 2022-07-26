@@ -716,7 +716,7 @@ switch (DELEGATE_ID) {
   case Expression::Id::StringNewId: {
     DELEGATE_START(StringNew);
     DELEGATE_FIELD_INT(StringNew, op);
-    DELEGATE_FIELD_CHILD(StringNew, length);
+    DELEGATE_FIELD_OPTIONAL_CHILD(StringNew, length);
     DELEGATE_FIELD_CHILD(StringNew, ptr);
     DELEGATE_END(StringNew);
     break;
@@ -737,6 +737,7 @@ switch (DELEGATE_ID) {
   case Expression::Id::StringEncodeId: {
     DELEGATE_START(StringEncode);
     DELEGATE_FIELD_INT(StringEncode, op);
+    DELEGATE_FIELD_OPTIONAL_CHILD(StringEncode, start);
     DELEGATE_FIELD_CHILD(StringEncode, ptr);
     DELEGATE_FIELD_CHILD(StringEncode, ref);
     DELEGATE_END(StringEncode);

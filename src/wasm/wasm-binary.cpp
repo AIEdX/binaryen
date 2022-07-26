@@ -693,6 +693,7 @@ void WasmBinaryWriter::writeElementSegments() {
   auto start = startSection(BinaryConsts::Section::Element);
   o << U32LEB(elemCount);
 
+  Type funcref = Type(HeapType::func, Nullable);
   for (auto& segment : wasm->elementSegments) {
     Index tableIdx = 0;
 
@@ -708,7 +709,7 @@ void WasmBinaryWriter::writeElementSegments() {
     if (!isPassive) {
       tableIdx = getTableIndex(segment->table);
       hasTableIndex =
-        tableIdx > 0 || wasm->getTable(segment->table)->type != Type::funcref;
+        tableIdx > 0 || wasm->getTable(segment->table)->type != funcref;
     }
 
     uint32_t flags = 0;
@@ -1339,7 +1340,41 @@ void WasmBinaryWriter::writeInlineBuffer(const char* data, size_t size) {
 }
 
 void WasmBinaryWriter::writeType(Type type) {
-  if (type.isRef() && !type.isBasic()) {
+  if (type.isRef()) {
+    auto heapType = type.getHeapType();
+    if (heapType.isBasic() && type.isNullable()) {
+      switch (heapType.getBasic()) {
+        case HeapType::any:
+          o << S32LEB(BinaryConsts::EncodedType::anyref);
+          return;
+        case HeapType::func:
+          o << S32LEB(BinaryConsts::EncodedType::funcref);
+          return;
+        case HeapType::eq:
+          o << S32LEB(BinaryConsts::EncodedType::eqref);
+          return;
+        case HeapType::i31:
+          // TODO: Emit i31ref once V8 (and Binaryen itself) treats it as
+          // nullable.
+          break;
+        case HeapType::data:
+          // TODO: Emit dataref once V8 (and Binaryen itself) treats it as
+          // nullable.
+          break;
+        case HeapType::string:
+          o << S32LEB(BinaryConsts::EncodedType::stringref);
+          return;
+        case HeapType::stringview_wtf8:
+          o << S32LEB(BinaryConsts::EncodedType::stringview_wtf8);
+          return;
+        case HeapType::stringview_wtf16:
+          o << S32LEB(BinaryConsts::EncodedType::stringview_wtf16);
+          return;
+        case HeapType::stringview_iter:
+          o << S32LEB(BinaryConsts::EncodedType::stringview_iter);
+          return;
+      }
+    }
     if (type.isNullable()) {
       o << S32LEB(BinaryConsts::EncodedType::nullable);
     } else {
@@ -1380,21 +1415,6 @@ void WasmBinaryWriter::writeType(Type type) {
       break;
     case Type::v128:
       ret = BinaryConsts::EncodedType::v128;
-      break;
-    case Type::funcref:
-      ret = BinaryConsts::EncodedType::funcref;
-      break;
-    case Type::anyref:
-      ret = BinaryConsts::EncodedType::anyref;
-      break;
-    case Type::eqref:
-      ret = BinaryConsts::EncodedType::eqref;
-      break;
-    case Type::i31ref:
-      ret = BinaryConsts::EncodedType::i31ref;
-      break;
-    case Type::dataref:
-      ret = BinaryConsts::EncodedType::dataref;
       break;
     default:
       WASM_UNREACHABLE("unexpected type");
@@ -1774,13 +1794,13 @@ bool WasmBinaryBuilder::getBasicType(int32_t code, Type& out) {
       out = Type::v128;
       return true;
     case BinaryConsts::EncodedType::funcref:
-      out = Type::funcref;
+      out = Type(HeapType::func, Nullable);
       return true;
     case BinaryConsts::EncodedType::anyref:
-      out = Type::anyref;
+      out = Type(HeapType::any, Nullable);
       return true;
     case BinaryConsts::EncodedType::eqref:
-      out = Type::eqref;
+      out = Type(HeapType::eq, Nullable);
       return true;
     case BinaryConsts::EncodedType::i31ref:
       out = Type(HeapType::i31, NonNullable);
@@ -7157,6 +7177,7 @@ bool WasmBinaryBuilder::maybeVisitArrayCopy(Expression*& out, uint32_t code) {
 
 bool WasmBinaryBuilder::maybeVisitStringNew(Expression*& out, uint32_t code) {
   StringNewOp op;
+  Expression* length = nullptr;
   if (code == BinaryConsts::StringNewWTF8) {
     auto policy = getU32LEB();
     switch (policy) {
@@ -7172,12 +7193,30 @@ bool WasmBinaryBuilder::maybeVisitStringNew(Expression*& out, uint32_t code) {
       default:
         throwError("bad policy for string.new");
     }
+    length = popNonVoidExpression();
   } else if (code == BinaryConsts::StringNewWTF16) {
     op = StringNewWTF16;
+    length = popNonVoidExpression();
+  } else if (code == BinaryConsts::StringNewWTF8Array) {
+    auto policy = getU32LEB();
+    switch (policy) {
+      case BinaryConsts::StringPolicy::UTF8:
+        op = StringNewUTF8Array;
+        break;
+      case BinaryConsts::StringPolicy::WTF8:
+        op = StringNewWTF8Array;
+        break;
+      case BinaryConsts::StringPolicy::Replace:
+        op = StringNewReplaceArray;
+        break;
+      default:
+        throwError("bad policy for string.new");
+    }
+  } else if (code == BinaryConsts::StringNewWTF16Array) {
+    op = StringNewWTF16Array;
   } else {
     return false;
   }
-  auto* length = popNonVoidExpression();
   auto* ptr = popNonVoidExpression();
   out = Builder(wasm).makeStringNew(op, ptr, length);
   return true;
@@ -7214,6 +7253,8 @@ bool WasmBinaryBuilder::maybeVisitStringMeasure(Expression*& out,
     op = StringMeasureWTF16;
   } else if (code == BinaryConsts::StringIsUSV) {
     op = StringMeasureIsUSV;
+  } else if (code == BinaryConsts::StringViewWTF16Length) {
+    op = StringMeasureWTF16View;
   } else {
     return false;
   }
@@ -7225,6 +7266,7 @@ bool WasmBinaryBuilder::maybeVisitStringMeasure(Expression*& out,
 bool WasmBinaryBuilder::maybeVisitStringEncode(Expression*& out,
                                                uint32_t code) {
   StringEncodeOp op;
+  Expression* start = nullptr;
   // TODO: share this code with string.measure?
   if (code == BinaryConsts::StringEncodeWTF8) {
     auto policy = getU32LEB();
@@ -7240,12 +7282,28 @@ bool WasmBinaryBuilder::maybeVisitStringEncode(Expression*& out,
     }
   } else if (code == BinaryConsts::StringEncodeWTF16) {
     op = StringEncodeWTF16;
+  } else if (code == BinaryConsts::StringEncodeWTF8Array) {
+    auto policy = getU32LEB();
+    switch (policy) {
+      case BinaryConsts::StringPolicy::UTF8:
+        op = StringEncodeUTF8Array;
+        break;
+      case BinaryConsts::StringPolicy::WTF8:
+        op = StringEncodeWTF8Array;
+        break;
+      default:
+        throwError("bad policy for string.encode");
+    }
+    start = popNonVoidExpression();
+  } else if (code == BinaryConsts::StringEncodeWTF16Array) {
+    op = StringEncodeWTF16Array;
+    start = popNonVoidExpression();
   } else {
     return false;
   }
   auto* ptr = popNonVoidExpression();
   auto* ref = popNonVoidExpression();
-  out = Builder(wasm).makeStringEncode(op, ref, ptr);
+  out = Builder(wasm).makeStringEncode(op, ref, ptr, start);
   return true;
 }
 

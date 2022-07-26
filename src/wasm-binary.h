@@ -1151,6 +1151,7 @@ enum ASTNodes {
   StringViewWTF8Advance = 0x91,
   StringViewWTF8Slice = 0x93,
   StringAsWTF16 = 0x98,
+  StringViewWTF16Length = 0x99,
   StringViewWTF16GetCodePoint = 0x9a,
   StringViewWTF16Slice = 0x9c,
   StringAsIter = 0xa0,
@@ -1158,6 +1159,10 @@ enum ASTNodes {
   StringViewIterAdvance = 0xa2,
   StringViewIterRewind = 0xa3,
   StringViewIterSlice = 0xa4,
+  StringNewWTF8Array = 0xb0,
+  StringNewWTF16Array = 0xb1,
+  StringEncodeWTF8Array = 0xb2,
+  StringEncodeWTF16Array = 0xb3,
 };
 
 enum MemoryAccess {

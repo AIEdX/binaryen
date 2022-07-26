@@ -616,12 +616,16 @@ instructions = [
     ("ref.as_i31",           "makeRefAs(s, RefAsI31)"),
     ("string.new_wtf8",      "makeStringNew(s, StringNewWTF8)"),
     ("string.new_wtf16",     "makeStringNew(s, StringNewWTF16)"),
+    ("string.new_wtf8_array",  "makeStringNew(s, StringNewWTF8Array)"),
+    ("string.new_wtf16_array", "makeStringNew(s, StringNewWTF16Array)"),
     ("string.const",         "makeStringConst(s)"),
     ("string.measure_wtf8",  "makeStringMeasure(s, StringMeasureWTF8)"),
     ("string.measure_wtf16", "makeStringMeasure(s, StringMeasureWTF16)"),
     ("string.is_usv_sequence", "makeStringMeasure(s, StringMeasureIsUSV)"),
     ("string.encode_wtf8",   "makeStringEncode(s, StringEncodeWTF8)"),
     ("string.encode_wtf16",  "makeStringEncode(s, StringEncodeWTF16)"),
+    ("string.encode_wtf8_array",   "makeStringEncode(s, StringEncodeWTF8Array)"),
+    ("string.encode_wtf16_array",  "makeStringEncode(s, StringEncodeWTF16Array)"),
     ("string.concat",        "makeStringConcat(s)"),
     ("string.eq",            "makeStringEq(s)"),
     ("string.as_wtf8",       "makeStringAs(s, StringAsWTF8)"),
@@ -635,6 +639,7 @@ instructions = [
     ("stringview_wtf8.slice",         "makeStringSliceWTF(s, StringSliceWTF8)"),
     ("stringview_wtf16.slice",        "makeStringSliceWTF(s, StringSliceWTF16)"),
     ("stringview_iter.slice",         "makeStringSliceIter(s)"),
+    ("stringview_wtf16.length",       "makeStringMeasure(s, StringMeasureWTF16View)"),
 ]
 
 
