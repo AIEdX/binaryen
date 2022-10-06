@@ -25,12 +25,12 @@ TEST_F(TypeTest, TypeIterator) {
 
   EXPECT_EQ(none.size(), 0u);
   EXPECT_EQ(none.begin(), none.end());
-  EXPECT_EQ(none.end() - none.begin(), 0u);
+  EXPECT_EQ(none.end() - none.begin(), 0);
   EXPECT_EQ(none.begin() + 0, none.end());
 
   EXPECT_EQ(i32.size(), 1u);
   EXPECT_NE(i32.begin(), i32.end());
-  EXPECT_EQ(i32.end() - i32.begin(), 1u);
+  EXPECT_EQ(i32.end() - i32.begin(), 1);
 
   EXPECT_EQ(*i32.begin(), i32);
   EXPECT_EQ(i32[0], i32);
@@ -56,7 +56,7 @@ TEST_F(TypeTest, TypeIterator) {
 
   EXPECT_EQ(tuple.size(), 4u);
   EXPECT_NE(tuple.begin(), tuple.end());
-  EXPECT_EQ(tuple.end() - tuple.begin(), 4u);
+  EXPECT_EQ(tuple.end() - tuple.begin(), 4);
 
   EXPECT_EQ(*tuple.begin(), i32);
   EXPECT_EQ(*(tuple.begin() + 1), i64);
@@ -120,7 +120,7 @@ TEST_F(TypeTest, IndexedTypePrinter) {
 
 TEST_F(EquirecursiveTest, Basics) {
   // (type $sig (func (param (ref $struct)) (result (ref $array) i32)))
-  // (type $struct (struct (field (ref null $array) (mut rtt 0 $array))))
+  // (type $struct (struct (field (ref null $array))))
   // (type $array (array (mut anyref)))
   TypeBuilder builder(3);
   ASSERT_EQ(builder.size(), size_t{3});
@@ -129,11 +129,10 @@ TEST_F(EquirecursiveTest, Basics) {
   Type refStruct = builder.getTempRefType(builder[1], NonNullable);
   Type refArray = builder.getTempRefType(builder[2], NonNullable);
   Type refNullArray = builder.getTempRefType(builder[2], Nullable);
-  Type rttArray = builder.getTempRttType(Rtt(0, builder[2]));
   Type refNullAny(HeapType::any, Nullable);
 
   Signature sig(refStruct, builder.getTempTupleType({refArray, Type::i32}));
-  Struct struct_({Field(refNullArray, Immutable), Field(rttArray, Mutable)});
+  Struct struct_({Field(refNullArray, Immutable)});
   Array array(Field(refNullAny, Mutable));
 
   builder[0] = sig;
@@ -155,13 +154,10 @@ TEST_F(EquirecursiveTest, Basics) {
   Type newRefStruct = Type(built[1], NonNullable);
   Type newRefArray = Type(built[2], NonNullable);
   Type newRefNullArray = Type(built[2], Nullable);
-  Type newRttArray = Type(Rtt(0, built[2]));
 
   EXPECT_EQ(built[0].getSignature(),
             Signature(newRefStruct, {newRefArray, Type::i32}));
-  EXPECT_EQ(
-    built[1].getStruct(),
-    Struct({Field(newRefNullArray, Immutable), Field(newRttArray, Mutable)}));
+  EXPECT_EQ(built[1].getStruct(), Struct({Field(newRefNullArray, Immutable)}));
   EXPECT_EQ(built[2].getArray(), Array(Field(refNullAny, Mutable)));
 
   // The built types should be different from the temporary types.
@@ -169,7 +165,6 @@ TEST_F(EquirecursiveTest, Basics) {
   EXPECT_NE(newRefStruct, refStruct);
   EXPECT_NE(newRefArray, refArray);
   EXPECT_NE(newRefNullArray, refNullArray);
-  EXPECT_NE(newRttArray, rttArray);
 }
 
 static void testDirectSelfSupertype() {
@@ -505,16 +500,19 @@ TEST_F(IsorecursiveTest, CanonicalizeBasicTypes) {
 }
 
 // Test SubTypes utility code.
-TEST_F(NominalTest, testSubTypes) {
+TEST_F(NominalTest, TestSubTypes) {
   Type anyref = Type(HeapType::any, Nullable);
-  Type funcref = Type(HeapType::func, Nullable);
+  Type eqref = Type(HeapType::eq, Nullable);
 
   // Build type types, the second of which is a subtype.
   TypeBuilder builder(2);
   builder[0] = Struct({Field(anyref, Immutable)});
-  builder[1] = Struct({Field(funcref, Immutable)});
+  builder[1] = Struct({Field(eqref, Immutable)});
   builder[1].subTypeOf(builder[0]);
-  auto built = *builder.build();
+
+  auto result = builder.build();
+  ASSERT_TRUE(result);
+  auto built = *result;
 
   // Build a tiny wasm module that uses the types, so that we can test the
   // SubTypes utility code.
@@ -534,4 +532,128 @@ TEST_F(NominalTest, testSubTypes) {
               subTypes0Inclusive[1] == built[0]);
   auto subTypes1 = subTypes.getStrictSubTypes(built[1]);
   EXPECT_EQ(subTypes1.size(), 0u);
+}
+
+// Test reuse of a previously built type as supertype.
+TEST_F(NominalTest, TestExistingSuperType) {
+  // Build an initial type A
+  Type A;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Struct();
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A = Type(built[0], Nullable);
+  }
+
+  // Build a type B <: A using a new builder
+  Type B;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Struct();
+    builder.setSubType(0, A.getHeapType());
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    B = Type(built[0], Nullable);
+  }
+
+  // Test that B <: A where A is the initial type A
+  auto superOfB = B.getHeapType().getSuperType();
+  ASSERT_TRUE(superOfB);
+  EXPECT_EQ(*superOfB, A.getHeapType());
+  EXPECT_NE(B.getHeapType(), A.getHeapType());
+}
+
+// Test reuse of a previously built type as supertype, where in isorecursive
+// mode canonicalization is performed.
+TEST_F(IsorecursiveTest, TestExistingSuperType) {
+  // Build an initial type A1
+  Type A1;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Struct();
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A1 = Type(built[0], Nullable);
+  }
+
+  // Build a separate type A2 identical to A1
+  Type A2;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Struct();
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A2 = Type(built[0], Nullable);
+  }
+
+  // Build a type B1 <: A1 using a new builder
+  Type B1;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Struct();
+    builder.setSubType(0, A1.getHeapType());
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    B1 = Type(built[0], Nullable);
+  }
+
+  // Build a type B2 <: A2 using a new builder
+  Type B2;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Struct();
+    builder.setSubType(0, A2.getHeapType());
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    B2 = Type(built[0], Nullable);
+  }
+
+  // Test that A1 == A2 and B1 == B2
+  EXPECT_EQ(A1.getHeapType(), A2.getHeapType());
+  EXPECT_EQ(B1.getHeapType(), B2.getHeapType());
+}
+
+// Test .depth() helper.
+TEST_F(NominalTest, TestDepth) {
+  HeapType A, B, C;
+  {
+    TypeBuilder builder(3);
+    builder[0] = Struct();
+    builder[1] = Struct();
+    builder[2] = Array(Field(Type::i32, Immutable));
+    builder.setSubType(1, builder.getTempHeapType(0));
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A = built[0];
+    B = built[1];
+    C = built[2];
+  }
+
+  // any < eq < data < specific struct and array types
+  EXPECT_EQ(HeapType(HeapType::any).getDepth(), 0U);
+  EXPECT_EQ(HeapType(HeapType::eq).getDepth(), 1U);
+  EXPECT_EQ(HeapType(HeapType::data).getDepth(), 2U);
+  EXPECT_EQ(A.getDepth(), 3U);
+  EXPECT_EQ(B.getDepth(), 4U);
+  EXPECT_EQ(C.getDepth(), 3U);
+
+  // Signature types are subtypes of func.
+  EXPECT_EQ(HeapType(HeapType::func).getDepth(), 0U);
+  EXPECT_EQ(HeapType(Signature(Type::none, Type::none)).getDepth(), 1U);
+
+  EXPECT_EQ(HeapType(HeapType::ext).getDepth(), 0U);
+
+  EXPECT_EQ(HeapType(HeapType::i31).getDepth(), 2U);
+  EXPECT_EQ(HeapType(HeapType::string).getDepth(), 2U);
+  EXPECT_EQ(HeapType(HeapType::stringview_wtf8).getDepth(), 2U);
+  EXPECT_EQ(HeapType(HeapType::stringview_wtf16).getDepth(), 2U);
+  EXPECT_EQ(HeapType(HeapType::stringview_iter).getDepth(), 2U);
 }

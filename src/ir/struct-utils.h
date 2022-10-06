@@ -130,6 +130,8 @@ struct StructScanner
   : public WalkerPass<PostWalker<StructScanner<T, SubType>>> {
   bool isFunctionParallel() override { return true; }
 
+  bool modifiesBinaryenIR() override { return false; }
+
   StructScanner(FunctionStructValuesMap<T>& functionNewInfos,
                 FunctionStructValuesMap<T>& functionSetGetInfos)
     : functionNewInfos(functionNewInfos),
@@ -189,7 +191,10 @@ struct StructScanner
     // (otherwise, we'd need to consider both the type actually written and the
     // type of the fallthrough, somehow).
     auto* fallthrough = Properties::getFallthrough(
-      expr, this->getPassOptions(), *this->getModule());
+      expr,
+      this->getPassOptions(),
+      *this->getModule(),
+      static_cast<SubType*>(this)->getFallthroughBehavior());
     if (fallthrough->type == expr->type) {
       expr = fallthrough;
     }
@@ -201,6 +206,11 @@ struct StructScanner
       }
     }
     static_cast<SubType*>(this)->noteExpression(expr, type, index, info);
+  }
+
+  Properties::FallthroughBehavior getFallthroughBehavior() {
+    // By default, look at and use tee&br_if fallthrough values.
+    return Properties::FallthroughBehavior::AllowTeeBrIf;
   }
 
   FunctionStructValuesMap<T>& functionNewInfos;

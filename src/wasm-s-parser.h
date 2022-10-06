@@ -126,6 +126,7 @@ class SExpressionWasmBuilder {
 
   std::vector<Name> functionNames;
   std::vector<Name> tableNames;
+  std::vector<Name> memoryNames;
   std::vector<Name> globalNames;
   std::vector<Name> tagNames;
   int functionCounter = 0;
@@ -158,6 +159,7 @@ private:
   void preParseFunctionType(Element& s);
   bool isImport(Element& curr);
   void preParseImports(Element& curr);
+  void preParseMemory(Element& curr);
   void parseModuleElement(Element& curr);
 
   // function parsing state
@@ -168,9 +170,14 @@ private:
 
   Name getFunctionName(Element& s);
   Name getTableName(Element& s);
+  Name getMemoryName(Element& s);
   Name getGlobalName(Element& s);
   Name getTagName(Element& s);
   void parseStart(Element& s) { wasm.addStart(getFunctionName(*s[1])); }
+
+  Name getMemoryNameAtIdx(Index i);
+  bool isMemory64(Name memoryName);
+  bool hasMemoryIdx(Element& s, Index defaultSize, Index i);
 
   // returns the next index in s
   size_t parseFunctionNames(Element& s, Name& name, Name& exportName);
@@ -279,24 +286,16 @@ private:
   Expression* makeCallRef(Element& s, bool isReturn);
   Expression* makeI31New(Element& s);
   Expression* makeI31Get(Element& s, bool signed_);
-  Expression* makeRefTest(Element& s);
   Expression* makeRefTestStatic(Element& s);
-  Expression* makeRefCast(Element& s);
   Expression* makeRefCastStatic(Element& s);
   Expression* makeRefCastNopStatic(Element& s);
   Expression* makeBrOn(Element& s, BrOnOp op);
   Expression* makeBrOnStatic(Element& s, BrOnOp op);
-  Expression* makeRttCanon(Element& s);
-  Expression* makeRttSub(Element& s);
-  Expression* makeRttFreshSub(Element& s);
-  Expression* makeStructNew(Element& s, bool default_);
   Expression* makeStructNewStatic(Element& s, bool default_);
   Index getStructIndex(Element& type, Element& field);
   Expression* makeStructGet(Element& s, bool signed_ = false);
   Expression* makeStructSet(Element& s);
-  Expression* makeArrayNew(Element& s, bool default_);
   Expression* makeArrayNewStatic(Element& s, bool default_);
-  Expression* makeArrayInit(Element& s);
   Expression* makeArrayInitStatic(Element& s);
   Expression* makeArrayGet(Element& s, bool signed_ = false);
   Expression* makeArraySet(Element& s);
@@ -319,8 +318,12 @@ private:
 
   // Helper functions
   Type parseOptionalResultType(Element& s, Index& i);
-  Index parseMemoryLimits(Element& s, Index i);
-  Index parseMemoryIndex(Element& s, Index i);
+  Index parseMemoryLimits(Element& s, Index i, std::unique_ptr<Memory>& memory);
+  Index parseMemoryIndex(Element& s, Index i, std::unique_ptr<Memory>& memory);
+  Index parseMemoryForInstruction(const std::string& instrName,
+                                  Memory& memory,
+                                  Element& s,
+                                  Index i);
   std::vector<Type> parseParamOrLocal(Element& s);
   std::vector<NameType> parseParamOrLocal(Element& s, size_t& localIndex);
   std::vector<Type> parseResults(Element& s);
@@ -334,12 +337,7 @@ private:
   void stringToBinary(const char* input, size_t size, std::vector<char>& data);
   void parseMemory(Element& s, bool preParseImport = false);
   void parseData(Element& s);
-  void parseInnerData(Element& s,
-                      Index i,
-                      Name name,
-                      bool hasExplicitName,
-                      Expression* offset,
-                      bool isPassive);
+  void parseInnerData(Element& s, Index i, std::unique_ptr<DataSegment>& seg);
   void parseExport(Element& s);
   void parseImport(Element& s);
   void parseGlobal(Element& s, bool preParseImport = false);
@@ -359,7 +357,7 @@ private:
 
   // Struct/Array instructions have an unnecessary heap type that is just for
   // validation (except for the case of unreachability, but that's not a problem
-  // anyhow, we can ignore it there). That is, we also have a reference / rtt
+  // anyhow, we can ignore it there). That is, we also have a reference typed
   // child from which we can infer the type anyhow, and we just need to check
   // that type is the same.
   void

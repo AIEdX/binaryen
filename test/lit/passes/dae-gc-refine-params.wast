@@ -310,7 +310,7 @@
  ;; CHECK-NEXT:   (local.get $x)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (drop
- ;; CHECK-NEXT:   (block $block (result (ref null ${i32}))
+ ;; CHECK-NEXT:   (block (result (ref null ${i32}))
  ;; CHECK-NEXT:    (local.tee $x
  ;; CHECK-NEXT:     (call $get_null_{i32_i64})
  ;; CHECK-NEXT:    )
@@ -322,7 +322,7 @@
  ;; NOMNL-NEXT:   (local.get $x)
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT:  (drop
- ;; NOMNL-NEXT:   (block $block (result (ref null ${i32}))
+ ;; NOMNL-NEXT:   (block (result (ref null ${i32}))
  ;; NOMNL-NEXT:    (local.tee $x
  ;; NOMNL-NEXT:     (call $get_null_{i32_i64})
  ;; NOMNL-NEXT:    )
@@ -466,11 +466,11 @@
  )
 
  ;; CHECK:      (func $unused-and-refinable
- ;; CHECK-NEXT:  (local $0 (ref null data))
+ ;; CHECK-NEXT:  (local $0 dataref)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $unused-and-refinable (type $none_=>_none)
- ;; NOMNL-NEXT:  (local $0 (ref null data))
+ ;; NOMNL-NEXT:  (local $0 dataref)
  ;; NOMNL-NEXT:  (nop)
  ;; NOMNL-NEXT: )
  (func $unused-and-refinable (param $0 dataref)
@@ -498,25 +498,21 @@
  )
 
  ;; CHECK:      (func $non-nullable-fixup (param $0 (ref ${}))
- ;; CHECK-NEXT:  (local $1 (ref null data))
+ ;; CHECK-NEXT:  (local $1 dataref)
  ;; CHECK-NEXT:  (local.set $1
  ;; CHECK-NEXT:   (local.get $0)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (local.set $1
- ;; CHECK-NEXT:   (ref.as_non_null
- ;; CHECK-NEXT:    (local.get $1)
- ;; CHECK-NEXT:   )
+ ;; CHECK-NEXT:   (local.get $1)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $non-nullable-fixup (type $ref|${}|_=>_none) (param $0 (ref ${}))
- ;; NOMNL-NEXT:  (local $1 (ref null data))
+ ;; NOMNL-NEXT:  (local $1 dataref)
  ;; NOMNL-NEXT:  (local.set $1
  ;; NOMNL-NEXT:   (local.get $0)
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT:  (local.set $1
- ;; NOMNL-NEXT:   (ref.as_non_null
- ;; NOMNL-NEXT:    (local.get $1)
- ;; NOMNL-NEXT:   )
+ ;; NOMNL-NEXT:   (local.get $1)
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT: )
  (func $non-nullable-fixup (param $0 dataref)

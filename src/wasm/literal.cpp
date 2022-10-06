@@ -53,8 +53,6 @@ Literal::Literal(Type type) : type(type) {
   if (isData()) {
     assert(!type.isNonNullable());
     new (&gcData) std::shared_ptr<GCData>();
-  } else if (type.isRtt()) {
-    new (this) Literal(Literal::makeCanonicalRtt(type.getHeapType()));
   } else {
     // For anything else, zero out all the union data.
     memset(&v128, 0, 16);
@@ -65,17 +63,10 @@ Literal::Literal(const uint8_t init[16]) : type(Type::v128) {
   memcpy(&v128, init, 16);
 }
 
-Literal::Literal(std::shared_ptr<GCData> gcData, Type type)
-  : gcData(gcData), type(type) {
-  // Null data is only allowed if nullable.
-  assert(gcData || type.isNullable());
+Literal::Literal(std::shared_ptr<GCData> gcData, HeapType type)
+  : gcData(gcData), type(type, gcData ? NonNullable : Nullable) {
   // The type must be a proper type for GC data.
   assert(isData());
-}
-
-Literal::Literal(std::unique_ptr<RttSupers>&& rttSupers, Type type)
-  : rttSupers(std::move(rttSupers)), type(type) {
-  assert(type.isRtt());
 }
 
 Literal::Literal(const Literal& other) : type(other.type) {
@@ -106,15 +97,11 @@ Literal::Literal(const Literal& other) : type(other.type) {
     func = other.func;
     return;
   }
-  if (type.isRtt()) {
-    // Allocate a new RttSupers with a copy of the other's data.
-    new (&rttSupers) auto(std::make_unique<RttSupers>(*other.rttSupers));
-    return;
-  }
   if (type.isRef()) {
     auto heapType = type.getHeapType();
     if (heapType.isBasic()) {
       switch (heapType.getBasic()) {
+        case HeapType::ext:
         case HeapType::any:
         case HeapType::eq:
           return; // null
@@ -138,11 +125,8 @@ Literal::~Literal() {
   if (type.isBasic()) {
     return;
   }
-
   if (isData()) {
     gcData.~shared_ptr();
-  } else if (type.isRtt()) {
-    rttSupers.~unique_ptr();
   }
 }
 
@@ -152,18 +136,6 @@ Literal& Literal::operator=(const Literal& other) {
     new (this) auto(other);
   }
   return *this;
-}
-
-Literal Literal::makeCanonicalRtt(HeapType type) {
-  auto supers = std::make_unique<RttSupers>();
-  std::optional<HeapType> supertype;
-  for (auto curr = type; (supertype = curr.getSuperType()); curr = *supertype) {
-    supers->emplace_back(*supertype);
-  }
-  // We want the highest types to be first.
-  std::reverse(supers->begin(), supers->end());
-  size_t depth = supers->size();
-  return Literal(std::move(supers), Type(Rtt(depth, type)));
 }
 
 template<typename LaneT, int Lanes>
@@ -230,8 +202,6 @@ Literal Literal::makeZero(Type type) {
   assert(type.isSingle());
   if (type.isRef()) {
     return makeNull(type.getHeapType());
-  } else if (type.isRtt()) {
-    return Literal(type);
   } else {
     return makeFromInt32(0, type);
   }
@@ -247,6 +217,20 @@ Literal Literal::makeNegOne(Type type) {
   return makeFromInt32(-1, type);
 }
 
+Literal Literal::standardizeNaN(const Literal& input) {
+  if (!std::isnan(input.getFloat())) {
+    return input;
+  }
+  // Pick a simple canonical payload, and positive.
+  if (input.type == Type::f32) {
+    return Literal(bit_cast<float>(uint32_t(0x7fc00000u)));
+  } else if (input.type == Type::f64) {
+    return Literal(bit_cast<double>(uint64_t(0x7ff8000000000000ull)));
+  } else {
+    WASM_UNREACHABLE("unexpected type");
+  }
+}
+
 std::array<uint8_t, 16> Literal::getv128() const {
   assert(type == Type::v128);
   std::array<uint8_t, 16> ret;
@@ -257,11 +241,6 @@ std::array<uint8_t, 16> Literal::getv128() const {
 std::shared_ptr<GCData> Literal::getGCData() const {
   assert(isData());
   return gcData;
-}
-
-const RttSupers& Literal::getRttSupers() const {
-  assert(type.isRtt());
-  return *rttSupers;
 }
 
 Literal Literal::castToF32() {
@@ -385,8 +364,6 @@ bool Literal::operator==(const Literal& other) const {
     // other non-null reference type literals cannot represent concrete values,
     // i.e. there is no concrete anyref or eqref other than null.
     WASM_UNREACHABLE("unexpected type");
-  } else if (type.isRtt()) {
-    return *rttSupers == *other.rttSupers;
   }
   WASM_UNREACHABLE("unexpected type");
 }
@@ -496,12 +473,16 @@ std::ostream& operator<<(std::ostream& o, Literal literal) {
     if (literal.isData()) {
       auto data = literal.getGCData();
       if (data) {
-        o << "[ref " << data->rtt << ' ' << data->values << ']';
+        o << "[ref " << data->type << ' ' << data->values << ']';
       } else {
         o << "[ref null " << literal.type << ']';
       }
     } else {
       switch (literal.type.getHeapType().getBasic()) {
+        case HeapType::ext:
+          assert(literal.isNull() && "unexpected non-null externref literal");
+          o << "externref(null)";
+          break;
         case HeapType::any:
           assert(literal.isNull() && "unexpected non-null anyref literal");
           o << "anyref(null)";
@@ -526,15 +507,6 @@ std::ostream& operator<<(std::ostream& o, Literal literal) {
           WASM_UNREACHABLE("type should have been handled above");
       }
     }
-  } else if (literal.type.isRtt()) {
-    o << "[rtt ";
-    for (auto& super : literal.getRttSupers()) {
-      o << super.type << " :> ";
-      if (super.freshPtr) {
-        o << " (fresh)";
-      }
-    }
-    o << literal.type << ']';
   } else {
     TODO_SINGLE_COMPOUND(literal.type);
     switch (literal.type.getBasic()) {
@@ -901,40 +873,6 @@ Literal Literal::demote() const {
   return Literal(float(getf64()));
 }
 
-// Wasm has nondeterministic rules for NaN propagation in some operations. For
-// example. f32.neg is deterministic and just flips the sign, even of a NaN, but
-// f32.add is nondeterministic, and if one or more of the inputs is a NaN, then
-//
-//  * if all NaNs are canonical NaNs, the output is some arbitrary canonical NaN
-//  * otherwise the output is some arbitrary arithmetic NaN
-//
-// (canonical = NaN payload is 1000..000; arithmetic: 1???..???, that is, the
-// high bit is 1 and all others can be 0 or 1)
-//
-// For many things we don't need to care, and can just do a normal C++ add for
-// an f32.add, for example - the wasm rules are specified so that things like
-// that just work (in order for such math to be fast). However, for our
-// optimizer, it is useful to "standardize" NaNs when there is nondeterminism.
-// That is, when there are multiple valid outputs, it's nice to emit the same
-// one consistently, so that it doesn't look like the optimization changed
-// something. In other words, if the valid output of an expression is a set of
-// valid NaNs, and after optimization the output is still that same set, then
-// the optimization is valid. And if the interpreter picks the same NaN in both
-// cases from that identical set then nothing looks wrong to the fuzzer.
-template<typename T> static Literal standardizeNaN(T result) {
-  if (!std::isnan(result)) {
-    return Literal(result);
-  }
-  // Pick a simple canonical payload, and positive.
-  if (sizeof(T) == 4) {
-    return Literal(Literal(uint32_t(0x7fc00000u)).reinterpretf32());
-  } else if (sizeof(T) == 8) {
-    return Literal(Literal(uint64_t(0x7ff8000000000000ull)).reinterpretf64());
-  } else {
-    WASM_UNREACHABLE("invalid float");
-  }
-}
-
 Literal Literal::add(const Literal& other) const {
   switch (type.getBasic()) {
     case Type::i32:
@@ -942,9 +880,9 @@ Literal Literal::add(const Literal& other) const {
     case Type::i64:
       return Literal(uint64_t(i64) + uint64_t(other.i64));
     case Type::f32:
-      return standardizeNaN(getf32() + other.getf32());
+      return standardizeNaN(Literal(getf32() + other.getf32()));
     case Type::f64:
-      return standardizeNaN(getf64() + other.getf64());
+      return standardizeNaN(Literal(getf64() + other.getf64()));
     case Type::v128:
     case Type::none:
     case Type::unreachable:
@@ -960,9 +898,9 @@ Literal Literal::sub(const Literal& other) const {
     case Type::i64:
       return Literal(uint64_t(i64) - uint64_t(other.i64));
     case Type::f32:
-      return standardizeNaN(getf32() - other.getf32());
+      return standardizeNaN(Literal(getf32() - other.getf32()));
     case Type::f64:
-      return standardizeNaN(getf64() - other.getf64());
+      return standardizeNaN(Literal(getf64() - other.getf64()));
     case Type::v128:
     case Type::none:
     case Type::unreachable:
@@ -1057,9 +995,9 @@ Literal Literal::mul(const Literal& other) const {
     case Type::i64:
       return Literal(uint64_t(i64) * uint64_t(other.i64));
     case Type::f32:
-      return standardizeNaN(getf32() * other.getf32());
+      return standardizeNaN(Literal(getf32() * other.getf32()));
     case Type::f64:
-      return standardizeNaN(getf64() * other.getf64());
+      return standardizeNaN(Literal(getf64() * other.getf64()));
     case Type::v128:
     case Type::none:
     case Type::unreachable:
@@ -1078,7 +1016,7 @@ Literal Literal::div(const Literal& other) const {
           switch (std::fpclassify(lhs)) {
             case FP_NAN:
             case FP_ZERO:
-              return standardizeNaN(lhs / rhs);
+              return standardizeNaN(Literal(lhs / rhs));
             case FP_NORMAL:    // fallthrough
             case FP_SUBNORMAL: // fallthrough
             case FP_INFINITE:
@@ -1091,7 +1029,7 @@ Literal Literal::div(const Literal& other) const {
         case FP_INFINITE: // fallthrough
         case FP_NORMAL:   // fallthrough
         case FP_SUBNORMAL:
-          return standardizeNaN(lhs / rhs);
+          return standardizeNaN(Literal(lhs / rhs));
         default:
           WASM_UNREACHABLE("invalid fp classification");
       }
@@ -1104,7 +1042,7 @@ Literal Literal::div(const Literal& other) const {
           switch (std::fpclassify(lhs)) {
             case FP_NAN:
             case FP_ZERO:
-              return standardizeNaN(lhs / rhs);
+              return standardizeNaN(Literal(lhs / rhs));
             case FP_NORMAL:    // fallthrough
             case FP_SUBNORMAL: // fallthrough
             case FP_INFINITE:
@@ -1117,7 +1055,7 @@ Literal Literal::div(const Literal& other) const {
         case FP_INFINITE: // fallthrough
         case FP_NORMAL:   // fallthrough
         case FP_SUBNORMAL:
-          return standardizeNaN(lhs / rhs);
+          return standardizeNaN(Literal(lhs / rhs));
         default:
           WASM_UNREACHABLE("invalid fp classification");
       }
@@ -1453,10 +1391,10 @@ Literal Literal::min(const Literal& other) const {
     case Type::f32: {
       auto l = getf32(), r = other.getf32();
       if (std::isnan(l)) {
-        return standardizeNaN(l);
+        return standardizeNaN(Literal(l));
       }
       if (std::isnan(r)) {
-        return standardizeNaN(r);
+        return standardizeNaN(Literal(r));
       }
       if (l == r && l == 0) {
         return Literal(std::signbit(l) ? l : r);
@@ -1466,10 +1404,10 @@ Literal Literal::min(const Literal& other) const {
     case Type::f64: {
       auto l = getf64(), r = other.getf64();
       if (std::isnan(l)) {
-        return standardizeNaN(l);
+        return standardizeNaN(Literal(l));
       }
       if (std::isnan(r)) {
-        return standardizeNaN(r);
+        return standardizeNaN(Literal(r));
       }
       if (l == r && l == 0) {
         return Literal(std::signbit(l) ? l : r);
@@ -1486,10 +1424,10 @@ Literal Literal::max(const Literal& other) const {
     case Type::f32: {
       auto l = getf32(), r = other.getf32();
       if (std::isnan(l)) {
-        return standardizeNaN(l);
+        return standardizeNaN(Literal(l));
       }
       if (std::isnan(r)) {
-        return standardizeNaN(r);
+        return standardizeNaN(Literal(r));
       }
       if (l == r && l == 0) {
         return Literal(std::signbit(l) ? r : l);
@@ -1499,10 +1437,10 @@ Literal Literal::max(const Literal& other) const {
     case Type::f64: {
       auto l = getf64(), r = other.getf64();
       if (std::isnan(l)) {
-        return standardizeNaN(l);
+        return standardizeNaN(Literal(l));
       }
       if (std::isnan(r)) {
-        return standardizeNaN(r);
+        return standardizeNaN(Literal(r));
       }
       if (l == r && l == 0) {
         return Literal(std::signbit(l) ? r : l);
@@ -2564,33 +2502,6 @@ Literal Literal::relaxedFmaF64x2(const Literal& left,
 Literal Literal::relaxedFmsF64x2(const Literal& left,
                                  const Literal& right) const {
   return ternary<2, &Literal::getLanesF64x2, &Literal::fms>(*this, left, right);
-}
-
-bool Literal::isSubRtt(const Literal& other) const {
-  assert(type.isRtt() && other.type.isRtt());
-  // For this literal to be a sub-rtt of the other rtt, the supers must be a
-  // superset. That is, if other is a->b->c then we should be a->b->c as well
-  // with possibly ->d->.. added. The rttSupers array represents those chains,
-  // but only the supers, which means the last item in the chain is simply the
-  // type of the literal.
-  const auto& supers = getRttSupers();
-  const auto& otherSupers = other.getRttSupers();
-  if (otherSupers.size() > supers.size()) {
-    return false;
-  }
-  for (Index i = 0; i < otherSupers.size(); i++) {
-    if (supers[i] != otherSupers[i]) {
-      return false;
-    }
-  }
-  // If we have more supers than other, compare that extra super. Otherwise,
-  // we have the same amount of supers, and must be completely identical to
-  // other.
-  if (otherSupers.size() < supers.size()) {
-    return other.type.getHeapType() == supers[otherSupers.size()].type;
-  } else {
-    return other.type == type;
-  }
 }
 
 } // namespace wasm

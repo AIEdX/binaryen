@@ -13,8 +13,10 @@
  )
  ;; CHECK:      (func $1
  ;; CHECK-NEXT:  (drop
- ;; CHECK-NEXT:   (call_ref
- ;; CHECK-NEXT:    (unreachable)
+ ;; CHECK-NEXT:   (block ;; (replaces something unreachable we can't emit)
+ ;; CHECK-NEXT:    (drop
+ ;; CHECK-NEXT:     (unreachable)
+ ;; CHECK-NEXT:    )
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT: )
@@ -30,12 +32,10 @@
   (call $0)
   (drop
    (call_ref
-    (ref.cast
+    (ref.cast_static $none_=>_i32
      (ref.func $0)
-     (rtt.canon $none_=>_i32)
     )
    )
   )
  )
 )
-

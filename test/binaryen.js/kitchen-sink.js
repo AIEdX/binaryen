@@ -96,9 +96,10 @@ function test_features() {
   console.log("Features.Multivalue: " + binaryen.Features.Multivalue);
   console.log("Features.GC: " + binaryen.Features.GC);
   console.log("Features.Memory64: " + binaryen.Features.Memory64);
-  console.log("Features.TypedFunctionReferences: " + binaryen.Features.TypedFunctionReferences);
   console.log("Features.RelaxedSIMD: " + binaryen.Features.RelaxedSIMD);
   console.log("Features.ExtendedConst: " + binaryen.Features.ExtendedConst);
+  console.log("Features.Strings: " + binaryen.Features.Strings);
+  console.log("Features.MultiMemories: " + binaryen.Features.MultiMemories);
   console.log("Features.All: " + binaryen.Features.All);
 }
 
@@ -162,8 +163,6 @@ function test_ids() {
   console.log("RefTestId: " + binaryen.RefTestId);
   console.log("RefCastId: " + binaryen.RefCastId);
   console.log("BrOnId: " + binaryen.BrOnId);
-  console.log("RttCanonId: " + binaryen.RttCanonId);
-  console.log("RttSubId: " + binaryen.RttSubId);
   console.log("StructNewId: " + binaryen.StructNewId);
   console.log("StructGetId: " + binaryen.StructGetId);
   console.log("StructSetId: " + binaryen.StructSetId);
@@ -172,6 +171,21 @@ function test_ids() {
   console.log("ArrayGetId: " + binaryen.ArrayGetId);
   console.log("ArraySetId: " + binaryen.ArraySetId);
   console.log("ArrayLenId: " + binaryen.ArrayLenId);
+  console.log("ArrayCopy: " + binaryen.ArrayCopyId);
+  console.log("RefAs: " + binaryen.RefAsId);
+  console.log("StringNew: " + binaryen.StringNewId);
+  console.log("StringConst: " + binaryen.StringConstId);
+  console.log("StringMeasure: " + binaryen.StringMeasureId);
+  console.log("StringEncode: " + binaryen.StringEncodeId);
+  console.log("StringConcat: " + binaryen.StringConcatId);
+  console.log("StringEq: " + binaryen.StringEqId);
+  console.log("StringAs: " + binaryen.StringAsId);
+  console.log("StringWTF8Advance: " + binaryen.StringWTF8AdvanceId);
+  console.log("StringWTF16Get: " + binaryen.StringWTF16GetId);
+  console.log("StringIterNext: " + binaryen.StringIterNextId);
+  console.log("StringIterMove: " + binaryen.StringIterMoveId);
+  console.log("StringSliceWTF: " + binaryen.StringSliceWTFId);
+  console.log("StringSliceIter: " + binaryen.StringSliceIterId);
 }
 
 function test_core() {
@@ -179,6 +193,19 @@ function test_core() {
   // Module creation
 
   module = new binaryen.Module();
+  // Memory
+  module.setMemory(1, 256, "mem", [
+    {
+      passive: false,
+      offset: module.i32.const(10),
+      data: "hello, world".split('').map(function(x) { return x.charCodeAt(0) })
+    },
+    {
+      passive: true,
+      offset: null,
+      data: "I am passive".split('').map(function(x) { return x.charCodeAt(0) })
+    }
+  ], true);
 
   // Create a tag
   var tag = module.addTag("a-tag", binaryen.i32, binaryen.none);
@@ -632,6 +659,10 @@ function test_core() {
     module.eqref.pop(),
     module.i31ref.pop(),
     module.dataref.pop(),
+    module.stringref.pop(),
+    module.stringview_wtf8.pop(),
+    module.stringview_wtf16.pop(),
+    module.stringview_iter.pop(),
 
     // Memory
     module.memory.size(),
@@ -719,21 +750,6 @@ function test_core() {
   module.addActiveElementSegment("t0", "e0", [ binaryen.getFunctionInfo(sinker).name ]);
   assert(module.getNumTables() === 1);
   assert(module.getNumElementSegments() === 1);
-
-  // Memory. One per module
-
-  module.setMemory(1, 256, "mem", [
-    {
-      passive: false,
-      offset: module.i32.const(10),
-      data: "hello, world".split('').map(function(x) { return x.charCodeAt(0) })
-    },
-    {
-      passive: true,
-      offset: null,
-      data: "I am passive".split('').map(function(x) { return x.charCodeAt(0) })
-    }
-  ], true);
 
   // Start function. One per module
   var starter = module.addFunction("starter", binaryen.none, binaryen.none, [], module.nop());
@@ -1138,6 +1154,7 @@ function test_for_each() {
 
 function test_expression_info() {
   module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   // Issue #2392
   console.log("getExpressionInfo(memory.grow)=" + JSON.stringify(binaryen.getExpressionInfo(module.memory.grow(1))));

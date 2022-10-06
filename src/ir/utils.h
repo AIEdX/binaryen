@@ -119,7 +119,13 @@ struct ReFinalize
   : public WalkerPass<PostWalker<ReFinalize, OverriddenVisitor<ReFinalize>>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new ReFinalize; }
+  // Re-running finalize() does not change the types of locals, so validation is
+  // preserved.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<ReFinalize>();
+  }
 
   ReFinalize() { name = "refinalize"; }
 
@@ -185,7 +191,9 @@ struct ReFinalizeNode : public OverriddenVisitor<ReFinalizeNode> {
 struct AutoDrop : public WalkerPass<ExpressionStackWalker<AutoDrop>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new AutoDrop; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<AutoDrop>();
+  }
 
   AutoDrop() { name = "autodrop"; }
 

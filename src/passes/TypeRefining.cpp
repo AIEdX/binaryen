@@ -38,8 +38,9 @@ using FieldInfo = LUBFinder;
 
 struct FieldInfoScanner
   : public StructUtils::StructScanner<FieldInfo, FieldInfoScanner> {
-  Pass* create() override {
-    return new FieldInfoScanner(functionNewInfos, functionSetGetInfos);
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<FieldInfoScanner>(functionNewInfos,
+                                              functionSetGetInfos);
   }
 
   FieldInfoScanner(
@@ -72,25 +73,47 @@ struct FieldInfoScanner
   void noteRead(HeapType type, Index index, FieldInfo& info) {
     // Nothing to do for a read, we just care about written values.
   }
+
+  Properties::FallthroughBehavior getFallthroughBehavior() {
+    // Looking at fallthrough values may be dangerous here, because it ignores
+    // intermediate steps. Consider this:
+    //
+    // (struct.set $T 0
+    //   (local.tee
+    //     (struct.get $T 0)))
+    //
+    // This is a copy of a field to itself - normally something we can ignore
+    // (see above). But in this case, if we refine the field then that will
+    // update the struct.get, but the local.tee will still have the old type,
+    // which may not be refined enough. We could in theory always fix this up
+    // using casts later, but those casts may be expensive (especially ref.casts
+    // as opposed to ref.as_non_null), so for now just ignore tee fallthroughs.
+    // TODO: investigate more
+    return Properties::FallthroughBehavior::NoTeeBrIf;
+  }
 };
 
 struct TypeRefining : public Pass {
+  // Only affects GC type declarations and struct.gets.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
   StructUtils::StructValuesMap<FieldInfo> finalInfos;
 
-  void run(PassRunner* runner, Module* module) override {
+  void run(Module* module) override {
     if (!module->features.hasGC()) {
       return;
     }
-    if (getTypeSystem() != TypeSystem::Nominal) {
-      Fatal() << "TypeRefining requires nominal typing";
+    if (getTypeSystem() != TypeSystem::Nominal &&
+        getTypeSystem() != TypeSystem::Isorecursive) {
+      Fatal() << "TypeRefining requires nominal/hybrid typing";
     }
 
     // Find and analyze struct operations inside each function.
     StructUtils::FunctionStructValuesMap<FieldInfo> functionNewInfos(*module),
       functionSetGetInfos(*module);
     FieldInfoScanner scanner(functionNewInfos, functionSetGetInfos);
-    scanner.run(runner, module);
-    scanner.runOnModuleCode(runner, module);
+    scanner.run(getPassRunner(), module);
+    scanner.runOnModuleCode(getPassRunner(), module);
 
     // Combine the data from the functions.
     StructUtils::StructValuesMap<FieldInfo> combinedNewInfos;
@@ -200,8 +223,8 @@ struct TypeRefining : public Pass {
     }
 
     if (canOptimize) {
-      updateInstructions(*module, runner);
-      updateTypes(*module, runner);
+      updateInstructions(*module);
+      updateTypes(*module);
     }
   }
 
@@ -212,15 +235,20 @@ struct TypeRefining : public Pass {
   // at all, and we can end up with a situation where we alter the type to
   // something that is invalid for that read. To ensure the code still
   // validates, simply remove such reads.
-  void updateInstructions(Module& wasm, PassRunner* runner) {
+  void updateInstructions(Module& wasm) {
     struct ReadUpdater : public WalkerPass<PostWalker<ReadUpdater>> {
       bool isFunctionParallel() override { return true; }
+
+      // Only affects struct.gets.
+      bool requiresNonNullableLocalFixups() override { return false; }
 
       TypeRefining& parent;
 
       ReadUpdater(TypeRefining& parent) : parent(parent) {}
 
-      ReadUpdater* create() override { return new ReadUpdater(parent); }
+      std::unique_ptr<Pass> create() override {
+        return std::make_unique<ReadUpdater>(parent);
+      }
 
       void visitStructGet(StructGet* curr) {
         if (curr->ref->type == Type::unreachable) {
@@ -249,11 +277,11 @@ struct TypeRefining : public Pass {
     };
 
     ReadUpdater updater(*this);
-    updater.run(runner, &wasm);
-    updater.runOnModuleCode(runner, &wasm);
+    updater.run(getPassRunner(), &wasm);
+    updater.runOnModuleCode(getPassRunner(), &wasm);
   }
 
-  void updateTypes(Module& wasm, PassRunner* runner) {
+  void updateTypes(Module& wasm) {
     class TypeRewriter : public GlobalTypeRewriter {
       TypeRefining& parent;
 
@@ -278,7 +306,7 @@ struct TypeRefining : public Pass {
 
     TypeRewriter(wasm, *this).update();
 
-    ReFinalize().run(runner, &wasm);
+    ReFinalize().run(getPassRunner(), &wasm);
   }
 };
 

@@ -258,7 +258,9 @@ struct Walker : public VisitorType {
     for (auto& curr : module->elementSegments) {
       self->walkElementSegment(curr.get());
     }
-    self->walkMemory(&module->memory);
+    for (auto& curr : module->memories) {
+      self->walkMemory(curr.get());
+    }
     for (auto& curr : module->dataSegments) {
       self->walkDataSegment(curr.get());
     }
@@ -266,6 +268,7 @@ struct Walker : public VisitorType {
 
   // Walks module-level code, that is, code that is not in functions.
   void walkModuleCode(Module* module) {
+    setModule(module);
     // Dispatch statically through the SubType.
     SubType* self = static_cast<SubType*>(this);
     for (auto& curr : module->globals) {
@@ -281,6 +284,7 @@ struct Walker : public VisitorType {
         self->walk(item);
       }
     }
+    setModule(nullptr);
   }
 
   // Walk implementation. We don't use recursion as ASTs may be highly

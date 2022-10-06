@@ -190,7 +190,7 @@ public:
     } else {
       *canonical = *newGCData;
     }
-    return Literal(canonical, curr->type);
+    return Literal(canonical, curr->type.getHeapType());
   }
 };
 
@@ -199,7 +199,9 @@ struct Precompute
       PostWalker<Precompute, UnifiedExpressionVisitor<Precompute>>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new Precompute(propagate); }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<Precompute>(propagate);
+  }
 
   bool propagate = false;
 
@@ -514,9 +516,8 @@ private:
     if (type.isRef()) {
       return false;
     }
-    // For now, don't try to precompute an Rtt. TODO figure out when that would
-    // be safe and useful.
-    return !type.isRtt();
+
+    return true;
   }
 };
 
