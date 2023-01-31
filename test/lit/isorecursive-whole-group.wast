@@ -11,12 +11,12 @@
 
  (rec
   ;; CHECK:      (rec
-  ;; CHECK-NEXT:  (type $used (struct_subtype  data))
+  ;; CHECK-NEXT:  (type $used (struct ))
   (type $used (struct_subtype data))
-  ;; CHECK:       (type $unused (struct_subtype  data))
+  ;; CHECK:       (type $unused (struct ))
   (type $unused (struct_subtype data))
  )
 
- ;; CHECK:      (global $g (ref null $used) (ref.null $used))
+ ;; CHECK:      (global $g (ref null $used) (ref.null none))
  (global $g (ref null $used) (ref.null $used))
 )

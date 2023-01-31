@@ -79,7 +79,9 @@ public:
   explicit Literal(const std::array<Literal, 4>&);
   explicit Literal(const std::array<Literal, 2>&);
   explicit Literal(Name func, HeapType type)
-    : func(func), type(type, NonNullable) {}
+    : func(func), type(type, NonNullable) {
+    assert(type.isSignature());
+  }
   explicit Literal(std::shared_ptr<GCData> gcData, HeapType type);
   Literal(const Literal& other);
   Literal& operator=(const Literal& other);
@@ -90,21 +92,8 @@ public:
   bool isFunction() const { return type.isFunction(); }
   bool isData() const { return type.isData(); }
 
-  bool isNull() const {
-    if (type.isNullable()) {
-      if (type.isFunction()) {
-        return func.isNull();
-      }
-      if (isData()) {
-        return !gcData;
-      }
-      if (type.getHeapType() == HeapType::i31) {
-        return i32 == 0;
-      }
-      return true;
-    }
-    return false;
-  }
+  bool isNull() const { return type.isNull(); }
+
   bool isZero() const {
     switch (type.getBasic()) {
       case Type::i32:
@@ -208,6 +197,10 @@ public:
         WASM_UNREACHABLE("unexpected type");
     }
   }
+
+  static Literal makeFromMemory(void* p, Type type);
+  static Literal makeFromMemory(void* p, const Field& field);
+
   static Literal makeSignedMin(Type type) {
     switch (type.getBasic()) {
       case Type::i32:
@@ -239,7 +232,7 @@ public:
     }
   }
   static Literal makeNull(HeapType type) {
-    return Literal(Type(type, Nullable));
+    return Literal(Type(type.getBottom(), Nullable));
   }
   static Literal makeFunc(Name func, HeapType type) {
     return Literal(func, type);

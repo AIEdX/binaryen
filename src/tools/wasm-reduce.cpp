@@ -488,7 +488,7 @@ struct Reducer
 
   std::string getLocation() {
     if (getFunction()) {
-      return getFunction()->name.str;
+      return getFunction()->name.toString();
     }
     return "(non-function context)";
   }
@@ -935,7 +935,6 @@ struct Reducer
     // process things here, we may replace the module, so we should never again
     // refer to curr.
     assert(curr == module.get());
-    WASM_UNUSED(curr);
     curr = nullptr;
 
     // Reduction of entire functions at a time is very effective, and we do it
@@ -1142,7 +1141,7 @@ struct Reducer
     }
     // try to replace with a trivial value
     if (curr->type.isNullable()) {
-      RefNull* n = builder->makeRefNull(curr->type);
+      RefNull* n = builder->makeRefNull(curr->type.getHeapType());
       return tryToReplaceCurrent(n);
     }
     if (curr->type.isTuple() && curr->type.isDefaultable()) {
@@ -1293,9 +1292,10 @@ int main(int argc, const char* argv[]) {
   }
   if (getTypeSystem() == TypeSystem::Nominal) {
     extraFlags += " --nominal";
-  }
-  if (getTypeSystem() == TypeSystem::Isorecursive) {
+  } else if (getTypeSystem() == TypeSystem::Isorecursive) {
     extraFlags += " --hybrid";
+  } else {
+    WASM_UNREACHABLE("unexpected type system");
   }
 
   if (test.size() == 0) {

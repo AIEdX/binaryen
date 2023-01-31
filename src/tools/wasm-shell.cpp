@@ -31,7 +31,6 @@
 #include "wasm-s-parser.h"
 #include "wasm-validator.h"
 
-using namespace cashew;
 using namespace wasm;
 
 Name ASSERT_RETURN("assert_return");
@@ -162,7 +161,7 @@ protected:
     instances[name] = instances[lastModule];
 
     Colors::green(std::cerr);
-    std::cerr << "REGISTER MODULE INSTANCE AS \"" << name.c_str()
+    std::cerr << "REGISTER MODULE INSTANCE AS \"" << name.str
               << "\"  [line: " << s.line << "]\n";
     Colors::normal(std::cerr);
   }
@@ -190,11 +189,11 @@ protected:
       return instance->getExport(base);
     }
 
-    Fatal() << "Invalid operation " << s[0]->c_str();
+    Fatal() << "Invalid operation " << s[0]->toString();
   }
 
   void parseAssertTrap(Element& s) {
-    bool trapped = false;
+    [[maybe_unused]] bool trapped = false;
     auto& inner = *s[1];
     if (inner[0]->str() == MODULE) {
       return parseModuleAssertion(s);
@@ -208,7 +207,6 @@ protected:
       std::cout << "[exception thrown: " << e << "]" << std::endl;
       trapped = true;
     }
-    WASM_UNUSED(trapped);
     assert(trapped);
   }
 
@@ -219,7 +217,7 @@ protected:
       expected = getLiteralsFromConstExpression(
         builders[lastModule]->parseExpression(*s[2]));
     }
-    bool trapped = false;
+    [[maybe_unused]] bool trapped = false;
     try {
       actual = parseOperation(*s[1]);
     } catch (const TrapException&) {
@@ -228,7 +226,6 @@ protected:
       std::cout << "[exception thrown: " << e << "]" << std::endl;
       trapped = true;
     }
-    WASM_UNUSED(trapped);
     assert(!trapped);
     std::cerr << "seen " << actual << ", expected " << expected << '\n';
     if (expected != actual) {

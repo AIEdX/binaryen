@@ -889,7 +889,7 @@ void TranslateToFuzzReader::dropToLog(Function* func) {
 }
 
 void TranslateToFuzzReader::addInvocations(Function* func) {
-  Name name = func->name.str + std::string("_invoker");
+  Name name = func->name.toString() + std::string("_invoker");
   if (wasm.getFunctionOrNull(name) || wasm.getExportOrNull(name)) {
     return;
   }
@@ -1967,7 +1967,7 @@ Expression* TranslateToFuzzReader::makeRefFuncConst(Type type) {
   }
   // TODO: randomize the order
   for (auto& func : wasm.functions) {
-    if (Type::isSubType(type, Type(func->type, NonNullable))) {
+    if (Type::isSubType(Type(func->type, NonNullable), type)) {
       return builder.makeRefFunc(func->name, func->type);
     }
   }
@@ -1976,7 +1976,7 @@ Expression* TranslateToFuzzReader::makeRefFuncConst(Type type) {
   // to add a ref.as_non_null to validate, and the code will trap when we get
   // here).
   if ((type.isNullable() && oneIn(2)) || (type.isNonNullable() && oneIn(16))) {
-    Expression* ret = builder.makeRefNull(Type(heapType, Nullable));
+    Expression* ret = builder.makeRefNull(HeapType::nofunc);
     if (!type.isNullable()) {
       ret = builder.makeRefAs(RefAsNonNull, ret);
     }
@@ -2000,7 +2000,7 @@ Expression* TranslateToFuzzReader::makeConst(Type type) {
     assert(wasm.features.hasReferenceTypes());
     // With a low chance, just emit a null if that is valid.
     if (type.isNullable() && oneIn(8)) {
-      return builder.makeRefNull(type);
+      return builder.makeRefNull(type.getHeapType());
     }
     if (type.getHeapType().isBasic()) {
       return makeConstBasicRef(type);
@@ -2041,7 +2041,18 @@ Expression* TranslateToFuzzReader::makeConstBasicRef(Type type) {
       // Choose a subtype we can materialize a constant for. We cannot
       // materialize non-nullable refs to func or i31 in global contexts.
       Nullability nullability = getSubType(type.getNullability());
-      HeapType subtype = oneIn(2) ? HeapType::i31 : HeapType::data;
+      HeapType subtype;
+      switch (upTo(3)) {
+        case 0:
+          subtype = HeapType::i31;
+          break;
+        case 1:
+          subtype = HeapType::struct_;
+          break;
+        case 2:
+          subtype = HeapType::array;
+          break;
+      }
       return makeConst(Type(subtype, nullability));
     }
     case HeapType::eq: {
@@ -2050,46 +2061,63 @@ Expression* TranslateToFuzzReader::makeConstBasicRef(Type type) {
         // a subtype of anyref, but we cannot create constants of it, except
         // for null.
         assert(type.isNullable());
-        return builder.makeRefNull(type);
+        return builder.makeRefNull(HeapType::none);
       }
       auto nullability = getSubType(type.getNullability());
       // i31.new is not allowed in initializer expressions.
       HeapType subtype;
-      if (funcContext) {
-        subtype = pick(HeapType::i31, HeapType::data);
-      } else {
-        subtype = HeapType::data;
+      switch (upTo(3)) {
+        case 0:
+          subtype = HeapType::i31;
+          break;
+        case 1:
+          subtype = HeapType::struct_;
+          break;
+        case 2:
+          subtype = HeapType::array;
+          break;
       }
       return makeConst(Type(subtype, nullability));
     }
     case HeapType::i31: {
       assert(wasm.features.hasGC());
       if (type.isNullable() && oneIn(4)) {
-        return builder.makeRefNull(type);
+        return builder.makeRefNull(HeapType::none);
       }
       return builder.makeI31New(makeConst(Type::i32));
     }
-    case HeapType::data: {
+    case HeapType::struct_: {
       assert(wasm.features.hasGC());
       // TODO: Construct nontrivial types. For now just create a hard coded
-      // struct or array.
-      if (oneIn(2)) {
-        // Use a local static to avoid creating a fresh nominal types in
-        // --nominal mode.
-        static HeapType trivialStruct = HeapType(Struct());
-        return builder.makeStructNew(trivialStruct, std::vector<Expression*>{});
-      } else {
-        // Use a local static to avoid creating a fresh nominal types in
-        // --nominal mode.
-        static HeapType trivialArray =
-          HeapType(Array(Field(Field::PackedType::i8, Immutable)));
-        return builder.makeArrayInit(trivialArray, {});
-      }
+      // struct.
+      // Use a local static to avoid creating a fresh nominal types in
+      // --nominal mode.
+      static HeapType trivialStruct = HeapType(Struct());
+      return builder.makeStructNew(trivialStruct, std::vector<Expression*>{});
     }
-    default: {
-      WASM_UNREACHABLE("invalid basic ref type");
+    case HeapType::array: {
+      // Use a local static to avoid creating a fresh nominal types in
+      // --nominal mode.
+      static HeapType trivialArray =
+        HeapType(Array(Field(Field::PackedType::i8, Immutable)));
+      return builder.makeArrayInit(trivialArray, {});
+    }
+    case HeapType::string:
+    case HeapType::stringview_wtf8:
+    case HeapType::stringview_wtf16:
+    case HeapType::stringview_iter:
+      WASM_UNREACHABLE("TODO: strings");
+    case HeapType::none:
+    case HeapType::noext:
+    case HeapType::nofunc: {
+      auto null = builder.makeRefNull(heapType);
+      if (!type.isNullable()) {
+        return builder.makeRefAs(RefAsNonNull, null);
+      }
+      return null;
     }
   }
+  WASM_UNREACHABLE("invalid basic ref type");
 }
 
 Expression* TranslateToFuzzReader::makeConstCompoundRef(Type type) {
@@ -2104,15 +2132,14 @@ Expression* TranslateToFuzzReader::makeConstCompoundRef(Type type) {
   // We weren't able to directly materialize a non-null constant. Try again to
   // create a null.
   if (type.isNullable()) {
-    return builder.makeRefNull(type);
+    return builder.makeRefNull(heapType);
   }
 
   // We have to produce a non-null value. Possibly create a null and cast it
   // to non-null even though that will trap at runtime. We must have a
   // function context for this because the cast is not allowed in globals.
   if (funcContext) {
-    return builder.makeRefAs(RefAsNonNull,
-                             builder.makeRefNull(Type(heapType, Nullable)));
+    return builder.makeRefAs(RefAsNonNull, builder.makeRefNull(heapType));
   }
 
   // Otherwise, we are not in a function context. This can happen if we need
@@ -2942,11 +2969,10 @@ Expression* TranslateToFuzzReader::makeBulkMemory(Type type) {
   WASM_UNREACHABLE("invalid value");
 }
 
-// TODO: support other RefIs variants, and rename this
 Expression* TranslateToFuzzReader::makeRefIsNull(Type type) {
   assert(type == Type::i32);
   assert(wasm.features.hasReferenceTypes());
-  return builder.makeRefIs(RefIsNull, make(getReferenceType()));
+  return builder.makeRefIsNull(make(getReferenceType()));
 }
 
 Expression* TranslateToFuzzReader::makeRefEq(Type type) {
@@ -3040,8 +3066,10 @@ Type TranslateToFuzzReader::getSingleConcreteType() {
                      Type(HeapType::eq, NonNullable),
                      Type(HeapType::i31, Nullable),
                      // Type(HeapType::i31, NonNullable),
-                     Type(HeapType::data, Nullable),
-                     Type(HeapType::data, NonNullable)));
+                     Type(HeapType::struct_, Nullable),
+                     Type(HeapType::struct_, NonNullable),
+                     Type(HeapType::array, Nullable),
+                     Type(HeapType::array, NonNullable)));
 }
 
 Type TranslateToFuzzReader::getReferenceType() {
@@ -3055,8 +3083,10 @@ Type TranslateToFuzzReader::getReferenceType() {
                      Type(HeapType::eq, NonNullable),
                      Type(HeapType::i31, Nullable),
                      Type(HeapType::i31, NonNullable),
-                     Type(HeapType::data, Nullable),
-                     Type(HeapType::data, NonNullable)));
+                     Type(HeapType::struct_, Nullable),
+                     Type(HeapType::struct_, NonNullable),
+                     Type(HeapType::array, Nullable),
+                     Type(HeapType::array, NonNullable)));
 }
 
 Type TranslateToFuzzReader::getEqReferenceType() {
@@ -3066,8 +3096,10 @@ Type TranslateToFuzzReader::getEqReferenceType() {
                                Type(HeapType::eq, NonNullable),
                                Type(HeapType::i31, Nullable),
                                Type(HeapType::i31, NonNullable),
-                               Type(HeapType::data, Nullable),
-                               Type(HeapType::data, NonNullable)));
+                               Type(HeapType::struct_, Nullable),
+                               Type(HeapType::struct_, NonNullable),
+                               Type(HeapType::array, Nullable),
+                               Type(HeapType::array, NonNullable)));
 }
 
 Type TranslateToFuzzReader::getMVPType() {
@@ -3138,33 +3170,55 @@ Nullability TranslateToFuzzReader::getSubType(Nullability nullability) {
 }
 
 HeapType TranslateToFuzzReader::getSubType(HeapType type) {
+  if (oneIn(2)) {
+    return type;
+  }
   if (type.isBasic()) {
     switch (type.getBasic()) {
       case HeapType::func:
         // TODO: Typed function references.
-        return HeapType::func;
+        return pick(FeatureOptions<HeapType>()
+                      .add(FeatureSet::ReferenceTypes, HeapType::func)
+                      .add(FeatureSet::GC, HeapType::nofunc));
       case HeapType::ext:
-        return HeapType::ext;
+        return pick(FeatureOptions<HeapType>()
+                      .add(FeatureSet::ReferenceTypes, HeapType::ext)
+                      .add(FeatureSet::GC, HeapType::noext));
       case HeapType::any:
         // TODO: nontrivial types as well.
         assert(wasm.features.hasReferenceTypes());
         assert(wasm.features.hasGC());
-        return pick(HeapType::any, HeapType::eq, HeapType::i31, HeapType::data);
+        return pick(HeapType::any,
+                    HeapType::eq,
+                    HeapType::i31,
+                    HeapType::struct_,
+                    HeapType::array,
+                    HeapType::none);
       case HeapType::eq:
         // TODO: nontrivial types as well.
         assert(wasm.features.hasReferenceTypes());
         assert(wasm.features.hasGC());
-        return pick(HeapType::eq, HeapType::i31, HeapType::data);
+        return pick(HeapType::eq,
+                    HeapType::i31,
+                    HeapType::struct_,
+                    HeapType::array,
+                    HeapType::none);
       case HeapType::i31:
-        return HeapType::i31;
-      case HeapType::data:
+        return pick(HeapType::i31, HeapType::none);
+      case HeapType::struct_:
         // TODO: nontrivial types as well.
-        return HeapType::data;
+        return pick(HeapType::struct_, HeapType::none);
+      case HeapType::array:
+        return pick(HeapType::array, HeapType::none);
       case HeapType::string:
       case HeapType::stringview_wtf8:
       case HeapType::stringview_wtf16:
       case HeapType::stringview_iter:
         WASM_UNREACHABLE("TODO: fuzz strings");
+      case HeapType::none:
+      case HeapType::noext:
+      case HeapType::nofunc:
+        break;
     }
   }
   // TODO: nontrivial types as well.

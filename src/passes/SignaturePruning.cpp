@@ -31,6 +31,7 @@
 #include "ir/intrinsics.h"
 #include "ir/lubs.h"
 #include "ir/module-utils.h"
+#include "ir/subtypes.h"
 #include "ir/type-updating.h"
 #include "param-utils.h"
 #include "pass.h"
@@ -52,8 +53,9 @@ struct SignaturePruning : public Pass {
     if (!module->features.hasGC()) {
       return;
     }
-    if (getTypeSystem() != TypeSystem::Nominal) {
-      Fatal() << "SignaturePruning requires nominal typing";
+
+    if (!getPassOptions().closedWorld) {
+      Fatal() << "SignaturePruning requires --closed-world";
     }
 
     if (!module->tables.empty()) {
@@ -148,6 +150,13 @@ struct SignaturePruning : public Pass {
       }
     }
 
+    // A type must have the same number of parameters and results as its
+    // supertypes and subtypes, so we only attempt to modify types without
+    // supertypes or subtypes.
+    // TODO We could handle "cycles" where we remove fields from a group of
+    //      types with subtyping relations at once.
+    SubTypes subTypes(*module);
+
     // Find parameters to prune.
     for (auto& [type, funcs] : sigFuncs) {
       auto sig = type.getSignature();
@@ -159,9 +168,9 @@ struct SignaturePruning : public Pass {
         continue;
       }
 
-      // A type with a signature supertype cannot be optimized: we'd need to
-      // remove the field from the super as well, which atm we don't attempt to
-      // do. TODO
+      if (!subTypes.getStrictSubTypes(type).empty()) {
+        continue;
+      }
       if (auto super = type.getSuperType()) {
         if (super->isSignature()) {
           continue;

@@ -9,19 +9,19 @@
 
 (module
   ;; CHECK:      (type $parent (struct (field i32)))
-  ;; NOMNL:      (type $parent (struct_subtype (field i32) data))
-  ;; NOMNL-TNH:      (type $parent (struct_subtype (field i32) data))
+  ;; NOMNL:      (type $parent (struct (field i32)))
+  ;; NOMNL-TNH:      (type $parent (struct (field i32)))
   (type $parent (struct (field i32)))
-  ;; CHECK:      (type $child (struct (field i32) (field f64)))
+  ;; CHECK:      (type $child (struct_subtype (field i32) (field f64) $parent))
   ;; NOMNL:      (type $child (struct_subtype (field i32) (field f64) $parent))
   ;; NOMNL-TNH:      (type $child (struct_subtype (field i32) (field f64) $parent))
   (type $child (struct_subtype (field i32) (field f64) $parent))
   ;; CHECK:      (type $other (struct (field i64) (field f32)))
-  ;; NOMNL:      (type $other (struct_subtype (field i64) (field f32) data))
-  ;; NOMNL-TNH:      (type $other (struct_subtype (field i64) (field f32) data))
+  ;; NOMNL:      (type $other (struct (field i64) (field f32)))
+  ;; NOMNL-TNH:      (type $other (struct (field i64) (field f32)))
   (type $other  (struct (field i64) (field f32)))
 
-  ;; CHECK:      (func $foo
+  ;; CHECK:      (func $foo (type $none_=>_none)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT: )
   ;; NOMNL:      (func $foo (type $none_=>_none)
@@ -33,7 +33,7 @@
   (func $foo)
 
 
-  ;; CHECK:      (func $ref-cast-iit (param $parent (ref $parent)) (param $child (ref $child)) (param $other (ref $other))
+  ;; CHECK:      (func $ref-cast-iit (type $ref|$parent|_ref|$child|_ref|$other|_=>_none) (param $parent (ref $parent)) (param $child (ref $child)) (param $other (ref $other))
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (local.get $parent)
   ;; CHECK-NEXT:  )
@@ -41,7 +41,7 @@
   ;; CHECK-NEXT:   (local.get $child)
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT:  (drop
-  ;; CHECK-NEXT:   (ref.cast_static $child
+  ;; CHECK-NEXT:   (ref.cast $child
   ;; CHECK-NEXT:    (local.get $parent)
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
@@ -62,7 +62,7 @@
   ;; NOMNL-NEXT:   (local.get $child)
   ;; NOMNL-NEXT:  )
   ;; NOMNL-NEXT:  (drop
-  ;; NOMNL-NEXT:   (ref.cast_static $child
+  ;; NOMNL-NEXT:   (ref.cast $child
   ;; NOMNL-NEXT:    (local.get $parent)
   ;; NOMNL-NEXT:   )
   ;; NOMNL-NEXT:  )
@@ -83,7 +83,7 @@
   ;; NOMNL-TNH-NEXT:   (local.get $child)
   ;; NOMNL-TNH-NEXT:  )
   ;; NOMNL-TNH-NEXT:  (drop
-  ;; NOMNL-TNH-NEXT:   (ref.cast_static $child
+  ;; NOMNL-TNH-NEXT:   (ref.cast $child
   ;; NOMNL-TNH-NEXT:    (local.get $parent)
   ;; NOMNL-TNH-NEXT:   )
   ;; NOMNL-TNH-NEXT:  )
@@ -104,13 +104,13 @@
     ;; a cast of parent to parent. We can optimize this as the new type will be
     ;; valid.
     (drop
-      (ref.cast_static $parent
+      (ref.cast $parent
         (local.get $parent)
       )
     )
     ;; a cast of child to a supertype: again, we replace with a valid type.
     (drop
-      (ref.cast_static $parent
+      (ref.cast $parent
         (local.get $child)
       )
     )
@@ -118,19 +118,19 @@
     ;; $child with one that is not equal or more specific, like $parent, so we
     ;; cannot optimize here.
     (drop
-      (ref.cast_static $child
+      (ref.cast $child
         (local.get $parent)
       )
     )
     ;; a cast of child to an unrelated type: it will trap anyhow
     (drop
-      (ref.cast_static $other
+      (ref.cast $other
         (local.get $child)
       )
     )
   )
 
-  ;; CHECK:      (func $ref-cast-iit-bad (param $parent (ref $parent))
+  ;; CHECK:      (func $ref-cast-iit-bad (type $ref|$parent|_=>_none) (param $parent (ref $parent))
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result (ref $parent))
   ;; CHECK-NEXT:    (call $foo)
@@ -138,7 +138,10 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT:  (drop
-  ;; CHECK-NEXT:   (ref.cast_static $parent
+  ;; CHECK-NEXT:   (block ;; (replaces something unreachable we can't emit)
+  ;; CHECK-NEXT:    (drop
+  ;; CHECK-NEXT:     (unreachable)
+  ;; CHECK-NEXT:    )
   ;; CHECK-NEXT:    (unreachable)
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
@@ -151,7 +154,10 @@
   ;; NOMNL-NEXT:   )
   ;; NOMNL-NEXT:  )
   ;; NOMNL-NEXT:  (drop
-  ;; NOMNL-NEXT:   (ref.cast_static $parent
+  ;; NOMNL-NEXT:   (block ;; (replaces something unreachable we can't emit)
+  ;; NOMNL-NEXT:    (drop
+  ;; NOMNL-NEXT:     (unreachable)
+  ;; NOMNL-NEXT:    )
   ;; NOMNL-NEXT:    (unreachable)
   ;; NOMNL-NEXT:   )
   ;; NOMNL-NEXT:  )
@@ -164,7 +170,10 @@
   ;; NOMNL-TNH-NEXT:   )
   ;; NOMNL-TNH-NEXT:  )
   ;; NOMNL-TNH-NEXT:  (drop
-  ;; NOMNL-TNH-NEXT:   (ref.cast_static $parent
+  ;; NOMNL-TNH-NEXT:   (block ;; (replaces something unreachable we can't emit)
+  ;; NOMNL-TNH-NEXT:    (drop
+  ;; NOMNL-TNH-NEXT:     (unreachable)
+  ;; NOMNL-TNH-NEXT:    )
   ;; NOMNL-TNH-NEXT:    (unreachable)
   ;; NOMNL-TNH-NEXT:   )
   ;; NOMNL-TNH-NEXT:  )
@@ -174,7 +183,7 @@
 
     ;; optimizing this cast away requires reordering.
     (drop
-      (ref.cast_static $parent
+      (ref.cast $parent
         (block (result (ref $parent))
           (call $foo)
           (local.get $parent)
@@ -184,13 +193,13 @@
 
     ;; ignore unreachability
     (drop
-      (ref.cast_static $parent
+      (ref.cast null $parent
         (unreachable)
       )
     )
   )
 
-  ;; CHECK:      (func $ref-eq-ref-cast (param $x eqref)
+  ;; CHECK:      (func $ref-eq-ref-cast (type $eqref_=>_none) (param $x eqref)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 1)
   ;; CHECK-NEXT:  )
@@ -206,18 +215,18 @@
   ;; NOMNL-TNH-NEXT:  )
   ;; NOMNL-TNH-NEXT: )
   (func $ref-eq-ref-cast (param $x eqref)
-    ;; we can look through a ref.cast if we ignore traps
+    ;; we can look through a ref.cast null if we ignore traps
     (drop
       (ref.eq
         (local.get $x)
-        (ref.cast_static $parent
+        (ref.cast null $parent
           (local.get $x)
         )
       )
     )
   )
 
-  ;; CHECK:      (func $set-of-as-non-null (param $x anyref)
+  ;; CHECK:      (func $set-of-as-non-null (type $anyref_=>_none) (param $x anyref)
   ;; CHECK-NEXT:  (local.set $x
   ;; CHECK-NEXT:   (local.get $x)
   ;; CHECK-NEXT:  )
@@ -243,24 +252,28 @@
 )
 
 (module
-  ;; CHECK:      (type $B (struct (field (ref null $A))))
+  (rec
+    ;; CHECK:      (rec
+    ;; CHECK-NEXT:  (type $A (struct ))
+    ;; NOMNL:      (type $A (struct ))
+    ;; NOMNL-TNH:      (type $A (struct ))
+    (type $A (struct_subtype  data))
+    ;; CHECK:       (type $B (struct_subtype (field (ref null $A)) $A))
+    ;; NOMNL:      (type $B (struct_subtype (field (ref null $A)) $A))
+    ;; NOMNL-TNH:      (type $B (struct_subtype (field (ref null $A)) $A))
+    (type $B (struct_subtype (field (ref null $A)) $A))
+    ;; CHECK:       (type $C (struct_subtype (field (ref null $D)) $B))
+    ;; NOMNL:      (type $C (struct_subtype (field (ref null $D)) $B))
+    ;; NOMNL-TNH:      (type $C (struct_subtype (field (ref null $D)) $B))
+    (type $C (struct_subtype (field (ref null $D)) $B))
+    ;; CHECK:       (type $D (struct_subtype  $A))
+    ;; NOMNL:      (type $D (struct_subtype  $A))
+    ;; NOMNL-TNH:      (type $D (struct_subtype  $A))
+    (type $D (struct_subtype  $A))
+  )
 
-  ;; CHECK:      (type $A (struct ))
-  ;; NOMNL:      (type $A (struct_subtype  data))
-  ;; NOMNL-TNH:      (type $A (struct_subtype  data))
-  (type $A (struct_subtype  data))
-  ;; NOMNL:      (type $B (struct_subtype (field (ref null $A)) $A))
-  ;; NOMNL-TNH:      (type $B (struct_subtype (field (ref null $A)) $A))
-  (type $B (struct_subtype (field (ref null $A)) $A))
-  ;; NOMNL:      (type $C (struct_subtype (field (ref null $D)) $B))
-  ;; NOMNL-TNH:      (type $C (struct_subtype (field (ref null $D)) $B))
-  (type $C (struct_subtype (field (ref null $D)) $B))
-  ;; NOMNL:      (type $D (struct_subtype  $A))
-  ;; NOMNL-TNH:      (type $D (struct_subtype  $A))
-  (type $D (struct_subtype  $A))
-
-  ;; CHECK:      (func $test (param $C (ref $B)) (result anyref)
-  ;; CHECK-NEXT:  (struct.get $B 0
+  ;; CHECK:      (func $test (type $ref|$C|_=>_anyref) (param $C (ref $C)) (result anyref)
+  ;; CHECK-NEXT:  (struct.get $C 0
   ;; CHECK-NEXT:   (local.get $C)
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
@@ -276,14 +289,14 @@
   ;; NOMNL-TNH-NEXT: )
   (func $test (param $C (ref $C)) (result anyref)
     (struct.get $B 0
-      (ref.cast_static $B ;; Try to cast a $C to its parent, $B. That always
-                          ;; works, so the cast can be removed.
-                          ;; Then once the cast is removed, the outer struct.get
-                          ;; will have a reference with a different type,
-                          ;; making it a (struct.get $C ..) instead of $B.
-                          ;; But $B and $C have different types on field 0, and
-                          ;; so the struct.get must be refinalized so the node
-                          ;; has the expected type.
+      (ref.cast $B ;; Try to cast a $C to its parent, $B. That always
+                   ;; works, so the cast can be removed.
+                   ;; Then once the cast is removed, the outer struct.get
+                   ;; will have a reference with a different type,
+                   ;; making it a (struct.get $C ..) instead of $B.
+                   ;; But $B and $C have different types on field 0, and
+                   ;; so the struct.get must be refinalized so the node
+                   ;; has the expected type.
         (local.get $C)
       )
     )

@@ -103,22 +103,60 @@ TEST_F(TypeTest, IndexedTypePrinter) {
 
   std::stringstream stream;
   stream << print(built[0]);
-  EXPECT_EQ(stream.str(), "(struct_subtype (field (ref null $array1)) data)");
+  EXPECT_EQ(stream.str(),
+            "(type $struct0 (struct (field (ref null $array1))))");
 
   stream.str("");
   stream << print(built[1]);
-  EXPECT_EQ(stream.str(), "(struct_subtype (field (ref null $struct0)) data)");
+  EXPECT_EQ(stream.str(),
+            "(type $struct1 (struct (field (ref null $struct0))))");
 
   stream.str("");
   stream << print(built[2]);
-  EXPECT_EQ(stream.str(), "(array_subtype (ref null $struct1) data)");
+  EXPECT_EQ(stream.str(), "(type $array0 (array (ref null $struct1)))");
 
   stream.str("");
   stream << print(built[3]);
-  EXPECT_EQ(stream.str(), "(array_subtype (ref null $array0) data)");
+  EXPECT_EQ(stream.str(), "(type $array1 (array (ref null $array0)))");
 }
 
-TEST_F(EquirecursiveTest, Basics) {
+TEST_F(TypeTest, ModuleTypePrinter) {
+  TypeBuilder builder(2);
+  builder.createRecGroup(0, 2);
+  builder[0] = Struct({Field(Type::i32, Immutable)});
+  builder[1] = Struct({Field(Type::i32, Immutable)});
+
+  auto result = builder.build();
+  ASSERT_TRUE(result);
+  auto built = *result;
+
+  Module module;
+  module.typeNames[built[0]] = {"A", {}};
+
+  ModuleTypeNameGenerator printDefault(module);
+
+  std::stringstream stream;
+  stream << printDefault(built[0]);
+  EXPECT_EQ(stream.str(), "(type $A (struct (field i32)))");
+
+  stream.str("");
+  stream << printDefault(built[1]);
+  EXPECT_EQ(stream.str(), "(type $struct.0 (struct (field i32)))");
+
+  using IndexedFallback = IndexedTypeNameGenerator<DefaultTypeNameGenerator>;
+  IndexedTypeNameGenerator fallback(built);
+  ModuleTypeNameGenerator<IndexedFallback> printIndexed(module, fallback);
+
+  stream.str("");
+  stream << printIndexed(built[0]);
+  EXPECT_EQ(stream.str(), "(type $A (struct (field i32)))");
+
+  stream.str("");
+  stream << printIndexed(built[1]);
+  EXPECT_EQ(stream.str(), "(type $1 (struct (field i32)))");
+}
+
+TEST_F(IsorecursiveTest, Basics) {
   // (type $sig (func (param (ref $struct)) (result (ref $array) i32)))
   // (type $struct (struct (field (ref null $array))))
   // (type $array (array (mut anyref)))
@@ -138,6 +176,8 @@ TEST_F(EquirecursiveTest, Basics) {
   builder[0] = sig;
   builder[1] = struct_;
   builder[2] = array;
+
+  builder.createRecGroup(0, 3);
 
   auto result = builder.build();
   ASSERT_TRUE(result);
@@ -362,7 +402,7 @@ TEST_F(IsorecursiveTest, CanonicalizeUses) {
   EXPECT_NE(built[4], built[6]);
 }
 
-TEST_F(IsorecursiveTest, DISABLED_CanonicalizeSelfReferences) {
+TEST_F(IsorecursiveTest, CanonicalizeSelfReferences) {
   TypeBuilder builder(5);
   // Single self-reference
   builder[0] = makeStruct(builder, {0});
@@ -470,7 +510,7 @@ TEST_F(IsorecursiveTest, CanonicalizeTypesBeforeSubtyping) {
   EXPECT_TRUE(result);
 }
 
-static void testCanonicalizeBasicTypes() {
+TEST_F(IsorecursiveTest, CanonicalizeBasicTypes) {
   TypeBuilder builder(5);
 
   Type anyref = builder.getTempRefType(builder[0], Nullable);
@@ -492,11 +532,343 @@ static void testCanonicalizeBasicTypes() {
   EXPECT_EQ(built[3], built[4]);
 }
 
-TEST_F(EquirecursiveTest, CanonicalizeBasicTypes) {
-  testCanonicalizeBasicTypes();
+TEST_F(IsorecursiveTest, TestHeapTypeRelations) {
+  HeapType ext = HeapType::ext;
+  HeapType func = HeapType::func;
+  HeapType any = HeapType::any;
+  HeapType eq = HeapType::eq;
+  HeapType i31 = HeapType::i31;
+  HeapType struct_ = HeapType::struct_;
+  HeapType array = HeapType::array;
+  HeapType string = HeapType::string;
+  HeapType stringview_wtf8 = HeapType::stringview_wtf8;
+  HeapType stringview_wtf16 = HeapType::stringview_wtf16;
+  HeapType stringview_iter = HeapType::stringview_iter;
+  HeapType none = HeapType::none;
+  HeapType noext = HeapType::noext;
+  HeapType nofunc = HeapType::nofunc;
+  HeapType defFunc = Signature();
+  HeapType defStruct = Struct();
+  HeapType defArray = Array(Field(Type::i32, Immutable));
+
+  auto assertLUB = [](HeapType a, HeapType b, std::optional<HeapType> lub) {
+    auto lub1 = HeapType::getLeastUpperBound(a, b);
+    auto lub2 = HeapType::getLeastUpperBound(b, a);
+    EXPECT_EQ(lub, lub1);
+    EXPECT_EQ(lub1, lub2);
+    if (a == b) {
+      EXPECT_TRUE(HeapType::isSubType(a, b));
+      EXPECT_TRUE(HeapType::isSubType(b, a));
+      EXPECT_EQ(a.getBottom(), b.getBottom());
+    } else if (lub && *lub == b) {
+      EXPECT_TRUE(HeapType::isSubType(a, b));
+      EXPECT_FALSE(HeapType::isSubType(b, a));
+      EXPECT_EQ(a.getBottom(), b.getBottom());
+    } else if (lub && *lub == a) {
+      EXPECT_FALSE(HeapType::isSubType(a, b));
+      EXPECT_TRUE(HeapType::isSubType(b, a));
+      EXPECT_EQ(a.getBottom(), b.getBottom());
+    } else if (lub) {
+      EXPECT_FALSE(HeapType::isSubType(a, b));
+      EXPECT_FALSE(HeapType::isSubType(b, a));
+      EXPECT_EQ(a.getBottom(), b.getBottom());
+    } else {
+      EXPECT_FALSE(HeapType::isSubType(a, b));
+      EXPECT_FALSE(HeapType::isSubType(b, a));
+      EXPECT_NE(a.getBottom(), b.getBottom());
+    }
+  };
+
+  assertLUB(ext, ext, ext);
+  assertLUB(ext, func, {});
+  assertLUB(ext, any, {});
+  assertLUB(ext, eq, {});
+  assertLUB(ext, i31, {});
+  assertLUB(ext, struct_, {});
+  assertLUB(ext, array, {});
+  assertLUB(ext, string, {});
+  assertLUB(ext, stringview_wtf8, {});
+  assertLUB(ext, stringview_wtf16, {});
+  assertLUB(ext, stringview_iter, {});
+  assertLUB(ext, none, {});
+  assertLUB(ext, noext, ext);
+  assertLUB(ext, nofunc, {});
+  assertLUB(ext, defFunc, {});
+  assertLUB(ext, defStruct, {});
+  assertLUB(ext, defArray, {});
+
+  assertLUB(func, func, func);
+  assertLUB(func, any, {});
+  assertLUB(func, eq, {});
+  assertLUB(func, i31, {});
+  assertLUB(func, struct_, {});
+  assertLUB(func, array, {});
+  assertLUB(func, string, {});
+  assertLUB(func, stringview_wtf8, {});
+  assertLUB(func, stringview_wtf16, {});
+  assertLUB(func, stringview_iter, {});
+  assertLUB(func, none, {});
+  assertLUB(func, noext, {});
+  assertLUB(func, nofunc, func);
+  assertLUB(func, defFunc, func);
+  assertLUB(func, defStruct, {});
+  assertLUB(func, defArray, {});
+
+  assertLUB(any, any, any);
+  assertLUB(any, eq, any);
+  assertLUB(any, i31, any);
+  assertLUB(any, struct_, any);
+  assertLUB(any, array, any);
+  assertLUB(any, string, any);
+  assertLUB(any, stringview_wtf8, any);
+  assertLUB(any, stringview_wtf16, any);
+  assertLUB(any, stringview_iter, any);
+  assertLUB(any, none, any);
+  assertLUB(any, noext, {});
+  assertLUB(any, nofunc, {});
+  assertLUB(any, defFunc, {});
+  assertLUB(any, defStruct, any);
+  assertLUB(any, defArray, any);
+
+  assertLUB(eq, eq, eq);
+  assertLUB(eq, i31, eq);
+  assertLUB(eq, struct_, eq);
+  assertLUB(eq, array, eq);
+  assertLUB(eq, string, any);
+  assertLUB(eq, stringview_wtf8, any);
+  assertLUB(eq, stringview_wtf16, any);
+  assertLUB(eq, stringview_iter, any);
+  assertLUB(eq, none, eq);
+  assertLUB(eq, noext, {});
+  assertLUB(eq, nofunc, {});
+  assertLUB(eq, defFunc, {});
+  assertLUB(eq, defStruct, eq);
+  assertLUB(eq, defArray, eq);
+
+  assertLUB(i31, i31, i31);
+  assertLUB(i31, struct_, eq);
+  assertLUB(i31, array, eq);
+  assertLUB(i31, string, any);
+  assertLUB(i31, stringview_wtf8, any);
+  assertLUB(i31, stringview_wtf16, any);
+  assertLUB(i31, stringview_iter, any);
+  assertLUB(i31, none, i31);
+  assertLUB(i31, noext, {});
+  assertLUB(i31, nofunc, {});
+  assertLUB(i31, defFunc, {});
+  assertLUB(i31, defStruct, eq);
+  assertLUB(i31, defArray, eq);
+
+  assertLUB(struct_, struct_, struct_);
+  assertLUB(struct_, array, eq);
+  assertLUB(struct_, string, any);
+  assertLUB(struct_, stringview_wtf8, any);
+  assertLUB(struct_, stringview_wtf16, any);
+  assertLUB(struct_, stringview_iter, any);
+  assertLUB(struct_, none, struct_);
+  assertLUB(struct_, noext, {});
+  assertLUB(struct_, nofunc, {});
+  assertLUB(struct_, defFunc, {});
+  assertLUB(struct_, defStruct, struct_);
+  assertLUB(struct_, defArray, eq);
+
+  assertLUB(array, array, array);
+  assertLUB(array, string, any);
+  assertLUB(array, stringview_wtf8, any);
+  assertLUB(array, stringview_wtf16, any);
+  assertLUB(array, stringview_iter, any);
+  assertLUB(array, none, array);
+  assertLUB(array, noext, {});
+  assertLUB(array, nofunc, {});
+  assertLUB(array, defFunc, {});
+  assertLUB(array, defStruct, eq);
+  assertLUB(array, defArray, array);
+
+  assertLUB(string, string, string);
+  assertLUB(string, stringview_wtf8, any);
+  assertLUB(string, stringview_wtf16, any);
+  assertLUB(string, stringview_iter, any);
+  assertLUB(string, none, string);
+  assertLUB(string, noext, {});
+  assertLUB(string, nofunc, {});
+  assertLUB(string, defFunc, {});
+  assertLUB(string, defStruct, any);
+  assertLUB(string, defArray, any);
+
+  assertLUB(stringview_wtf8, stringview_wtf8, stringview_wtf8);
+  assertLUB(stringview_wtf8, stringview_wtf16, any);
+  assertLUB(stringview_wtf8, stringview_iter, any);
+  assertLUB(stringview_wtf8, none, stringview_wtf8);
+  assertLUB(stringview_wtf8, noext, {});
+  assertLUB(stringview_wtf8, nofunc, {});
+  assertLUB(stringview_wtf8, defFunc, {});
+  assertLUB(stringview_wtf8, defStruct, any);
+  assertLUB(stringview_wtf8, defArray, any);
+
+  assertLUB(stringview_wtf16, stringview_wtf16, stringview_wtf16);
+  assertLUB(stringview_wtf16, stringview_iter, any);
+  assertLUB(stringview_wtf16, none, stringview_wtf16);
+  assertLUB(stringview_wtf16, noext, {});
+  assertLUB(stringview_wtf16, nofunc, {});
+  assertLUB(stringview_wtf16, defFunc, {});
+  assertLUB(stringview_wtf16, defStruct, any);
+  assertLUB(stringview_wtf16, defArray, any);
+
+  assertLUB(stringview_iter, stringview_iter, stringview_iter);
+  assertLUB(stringview_iter, none, stringview_iter);
+  assertLUB(stringview_iter, noext, {});
+  assertLUB(stringview_iter, nofunc, {});
+  assertLUB(stringview_iter, defFunc, {});
+  assertLUB(stringview_iter, defStruct, any);
+  assertLUB(stringview_iter, defArray, any);
+
+  assertLUB(none, none, none);
+  assertLUB(none, noext, {});
+  assertLUB(none, nofunc, {});
+  assertLUB(none, defFunc, {});
+  assertLUB(none, defStruct, defStruct);
+  assertLUB(none, defArray, defArray);
+
+  assertLUB(noext, noext, noext);
+  assertLUB(noext, nofunc, {});
+  assertLUB(noext, defFunc, {});
+  assertLUB(noext, defStruct, {});
+  assertLUB(noext, defArray, {});
+
+  assertLUB(nofunc, nofunc, nofunc);
+  assertLUB(nofunc, defFunc, defFunc);
+  assertLUB(nofunc, defStruct, {});
+  assertLUB(nofunc, defArray, {});
+
+  assertLUB(defFunc, defFunc, defFunc);
+  assertLUB(defFunc, defStruct, {});
+  assertLUB(defFunc, defArray, {});
+
+  assertLUB(defStruct, defStruct, defStruct);
+  assertLUB(defStruct, defArray, eq);
+
+  assertLUB(defArray, defArray, defArray);
+
+  Type anyref = Type(any, Nullable);
+  Type eqref = Type(eq, Nullable);
+
+  {
+    // Nullable and non-nullable references.
+    Type nonNullable(any, NonNullable);
+    EXPECT_TRUE(Type::isSubType(nonNullable, anyref));
+    EXPECT_FALSE(Type::isSubType(anyref, nonNullable));
+    EXPECT_TRUE(Type::hasLeastUpperBound(anyref, nonNullable));
+    EXPECT_EQ(Type::getLeastUpperBound(anyref, nonNullable), anyref);
+  }
+
+  {
+    // Immutable array fields are covariant.
+    TypeBuilder builder(2);
+    builder[0] = Array(Field(anyref, Immutable));
+    builder[1] = Array(Field(eqref, Immutable));
+    builder[1].subTypeOf(builder[0]);
+    auto results = builder.build();
+    ASSERT_TRUE(results);
+    auto built = *results;
+    EXPECT_TRUE(HeapType::isSubType(built[1], built[0]));
+  }
+
+  {
+    // Depth subtyping
+    TypeBuilder builder(2);
+    builder[0] = Struct({Field(anyref, Immutable)});
+    builder[1] = Struct({Field(eqref, Immutable)});
+    builder[1].subTypeOf(builder[0]);
+    auto results = builder.build();
+    ASSERT_TRUE(results);
+    auto built = *results;
+    EXPECT_TRUE(HeapType::isSubType(built[1], built[0]));
+  }
+
+  {
+    // Width subtyping
+    TypeBuilder builder(2);
+    builder[0] = Struct({Field(anyref, Immutable)});
+    builder[1] = Struct({Field(anyref, Immutable), Field(anyref, Immutable)});
+    builder[1].subTypeOf(builder[0]);
+    auto results = builder.build();
+    ASSERT_TRUE(results);
+    auto built = *results;
+    EXPECT_TRUE(HeapType::isSubType(built[1], built[0]));
+  }
+
+  {
+    // Nested structs
+    TypeBuilder builder(4);
+    auto ref0 = builder.getTempRefType(builder[0], Nullable);
+    auto ref1 = builder.getTempRefType(builder[1], Nullable);
+    builder[0] = Struct({Field(anyref, Immutable)});
+    builder[1] = Struct({Field(eqref, Immutable)});
+    builder[2] = Struct({Field(ref0, Immutable)});
+    builder[3] = Struct({Field(ref1, Immutable)});
+    builder[1].subTypeOf(builder[0]);
+    builder[3].subTypeOf(builder[2]);
+    auto results = builder.build();
+    ASSERT_TRUE(results);
+    auto built = *results;
+    EXPECT_TRUE(HeapType::isSubType(built[3], built[2]));
+  }
+
+  {
+    // Recursive structs
+    TypeBuilder builder(2);
+    auto ref0 = builder.getTempRefType(builder[0], Nullable);
+    auto ref1 = builder.getTempRefType(builder[1], Nullable);
+    builder[0] = Struct({Field(ref0, Immutable)});
+    builder[1] = Struct({Field(ref1, Immutable)});
+    builder[1].subTypeOf(builder[0]);
+    auto results = builder.build();
+    ASSERT_TRUE(results);
+    auto built = *results;
+    EXPECT_TRUE(HeapType::isSubType(built[1], built[0]));
+  }
 }
-TEST_F(IsorecursiveTest, CanonicalizeBasicTypes) {
-  testCanonicalizeBasicTypes();
+
+TEST_F(IsorecursiveTest, TestSubtypeErrors) {
+  Type anyref = Type(HeapType::any, Nullable);
+  Type eqref = Type(HeapType::eq, Nullable);
+  Type funcref = Type(HeapType::func, Nullable);
+
+  {
+    // Incompatible signatures.
+    TypeBuilder builder(2);
+    builder[0] = Signature(Type::none, anyref);
+    builder[1] = Signature(anyref, Type::none);
+    builder[1].subTypeOf(builder[0]);
+    EXPECT_FALSE(builder.build());
+  }
+
+  {
+    // Signatures incompatible in tuple size.
+    TypeBuilder builder(2);
+    builder[0] = Signature(Type::none, {anyref, anyref});
+    builder[1] = Signature(Type::none, {anyref, anyref, anyref});
+    builder[1].subTypeOf(builder[0]);
+    EXPECT_FALSE(builder.build());
+  }
+
+  {
+    // Mutable array fields are invariant.
+    TypeBuilder builder(2);
+    builder[0] = Array(Field(anyref, Mutable));
+    builder[1] = Array(Field(eqref, Mutable));
+    builder[1].subTypeOf(builder[0]);
+    EXPECT_FALSE(builder.build());
+  }
+
+  {
+    // Incompatible struct prefixes
+    TypeBuilder builder(2);
+    builder[0] = Struct({Field(anyref, Immutable), Field(anyref, Immutable)});
+    builder[1] = Struct({Field(funcref, Immutable), Field(anyref, Immutable)});
+    builder[1].subTypeOf(builder[0]);
+    EXPECT_FALSE(builder.build());
+  }
 }
 
 // Test SubTypes utility code.
@@ -620,6 +992,56 @@ TEST_F(IsorecursiveTest, TestExistingSuperType) {
   EXPECT_EQ(B1.getHeapType(), B2.getHeapType());
 }
 
+// Test .getMaxDepths() helper.
+TEST_F(NominalTest, TestMaxStructDepths) {
+  /*
+      A
+      |
+      B
+  */
+  HeapType A, B;
+  {
+    TypeBuilder builder(2);
+    builder[0] = Struct();
+    builder[1] = Struct();
+    builder.setSubType(1, builder.getTempHeapType(0));
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A = built[0];
+    B = built[1];
+  }
+
+  SubTypes subTypes({A, B});
+  auto maxDepths = subTypes.getMaxDepths();
+
+  EXPECT_EQ(maxDepths[B], Index(0));
+  EXPECT_EQ(maxDepths[A], Index(1));
+  EXPECT_EQ(maxDepths[HeapType::struct_], Index(2));
+  EXPECT_EQ(maxDepths[HeapType::eq], Index(3));
+  EXPECT_EQ(maxDepths[HeapType::any], Index(4));
+}
+
+TEST_F(NominalTest, TestMaxArrayDepths) {
+  HeapType A;
+  {
+    TypeBuilder builder(1);
+    builder[0] = Array(Field(Type::i32, Immutable));
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A = built[0];
+  }
+
+  SubTypes subTypes({A});
+  auto maxDepths = subTypes.getMaxDepths();
+
+  EXPECT_EQ(maxDepths[A], Index(0));
+  EXPECT_EQ(maxDepths[HeapType::array], Index(1));
+  EXPECT_EQ(maxDepths[HeapType::eq], Index(2));
+  EXPECT_EQ(maxDepths[HeapType::any], Index(3));
+}
+
 // Test .depth() helper.
 TEST_F(NominalTest, TestDepth) {
   HeapType A, B, C;
@@ -637,10 +1059,11 @@ TEST_F(NominalTest, TestDepth) {
     C = built[2];
   }
 
-  // any < eq < data < specific struct and array types
+  // any :> eq :> array :> specific array types
   EXPECT_EQ(HeapType(HeapType::any).getDepth(), 0U);
   EXPECT_EQ(HeapType(HeapType::eq).getDepth(), 1U);
-  EXPECT_EQ(HeapType(HeapType::data).getDepth(), 2U);
+  EXPECT_EQ(HeapType(HeapType::array).getDepth(), 2U);
+  EXPECT_EQ(HeapType(HeapType::struct_).getDepth(), 2U);
   EXPECT_EQ(A.getDepth(), 3U);
   EXPECT_EQ(B.getDepth(), 4U);
   EXPECT_EQ(C.getDepth(), 3U);
@@ -656,4 +1079,59 @@ TEST_F(NominalTest, TestDepth) {
   EXPECT_EQ(HeapType(HeapType::stringview_wtf8).getDepth(), 2U);
   EXPECT_EQ(HeapType(HeapType::stringview_wtf16).getDepth(), 2U);
   EXPECT_EQ(HeapType(HeapType::stringview_iter).getDepth(), 2U);
+
+  EXPECT_EQ(HeapType(HeapType::none).getDepth(), size_t(-1));
+  EXPECT_EQ(HeapType(HeapType::nofunc).getDepth(), size_t(-1));
+  EXPECT_EQ(HeapType(HeapType::noext).getDepth(), size_t(-1));
+}
+
+// Test .iterSubTypes() helper.
+TEST_F(NominalTest, TestIterSubTypes) {
+  /*
+        A
+       / \
+      B   C
+           \
+            D
+  */
+  HeapType A, B, C, D;
+  {
+    TypeBuilder builder(4);
+    builder[0] = Struct();
+    builder[1] = Struct();
+    builder[2] = Struct();
+    builder[3] = Struct();
+    builder.setSubType(1, builder.getTempHeapType(0));
+    builder.setSubType(2, builder.getTempHeapType(0));
+    builder.setSubType(3, builder.getTempHeapType(2));
+    auto result = builder.build();
+    ASSERT_TRUE(result);
+    auto built = *result;
+    A = built[0];
+    B = built[1];
+    C = built[2];
+    D = built[3];
+  }
+
+  SubTypes subTypes({A, B, C, D});
+
+  // Helper for comparing sets of types + their corresponding depth.
+  using TypeDepths = std::unordered_set<std::pair<HeapType, Index>>;
+
+  auto getSubTypes = [&](HeapType type, Index depth) {
+    TypeDepths ret;
+    subTypes.iterSubTypes(type, depth, [&](HeapType subType, Index depth) {
+      ret.insert({subType, depth});
+    });
+    return ret;
+  };
+
+  EXPECT_EQ(getSubTypes(A, 0), TypeDepths({{A, 0}}));
+  EXPECT_EQ(getSubTypes(A, 1), TypeDepths({{A, 0}, {B, 1}, {C, 1}}));
+  EXPECT_EQ(getSubTypes(A, 2), TypeDepths({{A, 0}, {B, 1}, {C, 1}, {D, 2}}));
+  EXPECT_EQ(getSubTypes(A, 3), TypeDepths({{A, 0}, {B, 1}, {C, 1}, {D, 2}}));
+
+  EXPECT_EQ(getSubTypes(C, 0), TypeDepths({{C, 0}}));
+  EXPECT_EQ(getSubTypes(C, 1), TypeDepths({{C, 0}, {D, 1}}));
+  EXPECT_EQ(getSubTypes(C, 2), TypeDepths({{C, 0}, {D, 1}}));
 }

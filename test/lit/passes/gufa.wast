@@ -16,7 +16,7 @@
 
   ;; CHECK:      (export "param-no" (func $param-no))
 
-  ;; CHECK:      (func $never-called (param $param i32) (result i32)
+  ;; CHECK:      (func $never-called (type $i32_=>_i32) (param $param i32) (result i32)
   ;; CHECK-NEXT:  (unreachable)
   ;; CHECK-NEXT: )
   (func $never-called (param $param i32) (result i32)
@@ -26,14 +26,14 @@
     (local.get $param)
   )
 
-  ;; CHECK:      (func $foo (result i32)
+  ;; CHECK:      (func $foo (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (i32.const 1)
   ;; CHECK-NEXT: )
   (func $foo (result i32)
     (i32.const 1)
   )
 
-  ;; CHECK:      (func $bar
+  ;; CHECK:      (func $bar (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -66,7 +66,7 @@
     )
   )
 
-  ;; CHECK:      (func $baz
+  ;; CHECK:      (func $baz (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (select
   ;; CHECK-NEXT:    (block (result i32)
@@ -101,7 +101,7 @@
     )
   )
 
-  ;; CHECK:      (func $return (result i32)
+  ;; CHECK:      (func $return (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (if
   ;; CHECK-NEXT:   (i32.const 0)
   ;; CHECK-NEXT:   (return
@@ -123,7 +123,7 @@
     (i32.const 2)
   )
 
-  ;; CHECK:      (func $call-return
+  ;; CHECK:      (func $call-return (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (call $return)
   ;; CHECK-NEXT:  )
@@ -136,7 +136,7 @@
     )
   )
 
-  ;; CHECK:      (func $return-same (result i32)
+  ;; CHECK:      (func $return-same (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (if
   ;; CHECK-NEXT:   (i32.const 0)
   ;; CHECK-NEXT:   (return
@@ -159,7 +159,7 @@
     (i32.const 1)
   )
 
-  ;; CHECK:      (func $call-return-same
+  ;; CHECK:      (func $call-return-same (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -176,7 +176,7 @@
     )
   )
 
-  ;; CHECK:      (func $local-no (result i32)
+  ;; CHECK:      (func $local-no (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (local $x i32)
   ;; CHECK-NEXT:  (if
   ;; CHECK-NEXT:   (call $import)
@@ -199,7 +199,7 @@
     (local.get $x)
   )
 
-  ;; CHECK:      (func $local-yes (result i32)
+  ;; CHECK:      (func $local-yes (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (local $x i32)
   ;; CHECK-NEXT:  (if
   ;; CHECK-NEXT:   (call $import)
@@ -222,7 +222,7 @@
     (local.get $x)
   )
 
-  ;; CHECK:      (func $param-no (param $param i32) (result i32)
+  ;; CHECK:      (func $param-no (type $i32_=>_i32) (param $param i32) (result i32)
   ;; CHECK-NEXT:  (if
   ;; CHECK-NEXT:   (local.get $param)
   ;; CHECK-NEXT:   (local.set $param
@@ -244,9 +244,9 @@
     (local.get $param)
   )
 
-  ;; CHECK:      (func $param-yes (param $param i32) (result i32)
+  ;; CHECK:      (func $param-yes (type $i32_=>_i32) (param $param i32) (result i32)
   ;; CHECK-NEXT:  (if
-  ;; CHECK-NEXT:   (i32.const 1)
+  ;; CHECK-NEXT:   (unreachable)
   ;; CHECK-NEXT:   (local.set $param
   ;; CHECK-NEXT:    (i32.const 1)
   ;; CHECK-NEXT:   )
@@ -254,23 +254,20 @@
   ;; CHECK-NEXT:  (i32.const 1)
   ;; CHECK-NEXT: )
   (func $param-yes (param $param i32) (result i32)
+    ;; As above, but now the function is not exported. That means it has no
+    ;; callers, so the first local.get can contain nothing, and will become an
+    ;; unreachable. The other local.get later down can only contain the
+    ;; local.set in the if, so we'll optimize it to 1.
     (if
       (local.get $param)
       (local.set $param
         (i32.const 1)
       )
     )
-    ;; As above, but now the function is not exported. That means it has no
-    ;; callers, so the only possible contents for $param are the local.set here,
-    ;; as this code is unreachable. We will infer a constant of 1 for all values
-    ;; of $param here. (With an SSA analysis, we could see that the first
-    ;; local.get must be unreachable, and optimize even better; as things are,
-    ;; we see the local.set and it is the only thing that sends values to the
-    ;; local.)
     (local.get $param)
   )
 
-  ;; CHECK:      (func $cycle (param $x i32) (param $y i32) (result i32)
+  ;; CHECK:      (func $cycle (type $i32_i32_=>_i32) (param $x i32) (param $y i32) (result i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -323,7 +320,7 @@
     )
   )
 
-  ;; CHECK:      (func $cycle-2 (param $x i32) (param $y i32) (result i32)
+  ;; CHECK:      (func $cycle-2 (type $i32_i32_=>_i32) (param $x i32) (param $y i32) (result i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -374,7 +371,7 @@
     )
   )
 
-  ;; CHECK:      (func $cycle-3 (param $x i32) (param $y i32) (result i32)
+  ;; CHECK:      (func $cycle-3 (type $i32_i32_=>_i32) (param $x i32) (param $y i32) (result i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -430,7 +427,7 @@
     )
   )
 
-  ;; CHECK:      (func $cycle-4 (param $x i32) (param $y i32) (result i32)
+  ;; CHECK:      (func $cycle-4 (type $i32_i32_=>_i32) (param $x i32) (param $y i32) (result i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (call $cycle-4
   ;; CHECK-NEXT:    (i32.const 1337)
@@ -470,7 +467,7 @@
     )
   )
 
-  ;; CHECK:      (func $cycle-5 (param $x i32) (param $y i32) (result i32)
+  ;; CHECK:      (func $cycle-5 (type $i32_i32_=>_i32) (param $x i32) (param $y i32) (result i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -519,7 +516,7 @@
     )
   )
 
-  ;; CHECK:      (func $blocks
+  ;; CHECK:      (func $blocks (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -595,7 +592,7 @@
   ;; CHECK:      (export "table" (table $0))
   (export "table" (table 0))
 
-  ;; CHECK:      (func $reffed (param $x i32)
+  ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (local.get $x)
   ;; CHECK-NEXT:  )
@@ -608,7 +605,7 @@
     )
   )
 
-  ;; CHECK:      (func $do-calls
+  ;; CHECK:      (func $do-calls (type $none_=>_none)
   ;; CHECK-NEXT:  (call $reffed
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:  )
@@ -645,7 +642,7 @@
 
   ;; CHECK:      (elem (i32.const 0) $reffed)
 
-  ;; CHECK:      (func $reffed (param $x i32)
+  ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:  )
@@ -656,7 +653,7 @@
     )
   )
 
-  ;; CHECK:      (func $do-calls
+  ;; CHECK:      (func $do-calls (type $none_=>_none)
   ;; CHECK-NEXT:  (call $reffed
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:  )
@@ -692,7 +689,7 @@
 
   ;; CHECK:      (elem (i32.const 0) $reffed)
 
-  ;; CHECK:      (func $reffed (param $x i32)
+  ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:  )
@@ -703,7 +700,7 @@
     )
   )
 
-  ;; CHECK:      (func $do-calls
+  ;; CHECK:      (func $do-calls (type $none_=>_none)
   ;; CHECK-NEXT:  (call_indirect $0 (type $i)
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:   (i32.const 0)
@@ -742,7 +739,7 @@
 
   ;; CHECK:      (elem (i32.const 0) $reffed)
 
-  ;; CHECK:      (func $reffed (param $x i32)
+  ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (local.get $x)
   ;; CHECK-NEXT:  )
@@ -753,7 +750,7 @@
     )
   )
 
-  ;; CHECK:      (func $do-calls
+  ;; CHECK:      (func $do-calls (type $none_=>_none)
   ;; CHECK-NEXT:  (call_indirect $0 (type $i)
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:   (i32.const 0)
@@ -794,7 +791,7 @@
 
   ;; CHECK:      (elem (i32.const 0) $reffed)
 
-  ;; CHECK:      (func $reffed (param $x i32)
+  ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:  )
@@ -805,7 +802,7 @@
     )
   )
 
-  ;; CHECK:      (func $do-calls
+  ;; CHECK:      (func $do-calls (type $none_=>_none)
   ;; CHECK-NEXT:  (call_indirect $0 (type $i)
   ;; CHECK-NEXT:   (i32.const 42)
   ;; CHECK-NEXT:   (i32.const 0)
@@ -832,7 +829,7 @@
 
   ;; CHECK:      (type $none_=>_none (func))
 
-  ;; CHECK:      (func $const (result i32)
+  ;; CHECK:      (func $const (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (i32.const 42)
   ;; CHECK-NEXT: )
   (func $const (result i32)
@@ -840,7 +837,7 @@
     (i32.const 42)
   )
 
-  ;; CHECK:      (func $retcall (result i32)
+  ;; CHECK:      (func $retcall (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (return_call $const)
   ;; CHECK-NEXT: )
   (func $retcall (result i32)
@@ -848,7 +845,7 @@
     (return_call $const)
   )
 
-  ;; CHECK:      (func $caller
+  ;; CHECK:      (func $caller (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (block (result i32)
   ;; CHECK-NEXT:    (drop
@@ -875,14 +872,14 @@
   ;; CHECK:      (import "a" "b" (func $import (result i32)))
   (import "a" "b" (func $import (result i32)))
 
-  ;; CHECK:      (func $internal (result i32)
+  ;; CHECK:      (func $internal (type $none_=>_i32) (result i32)
   ;; CHECK-NEXT:  (i32.const 42)
   ;; CHECK-NEXT: )
   (func $internal (result i32)
     (i32.const 42)
   )
 
-  ;; CHECK:      (func $calls
+  ;; CHECK:      (func $calls (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (call $import)
   ;; CHECK-NEXT:  )
@@ -945,7 +942,7 @@
 
   ;; CHECK:      (export "foo" (func $foo))
 
-  ;; CHECK:      (func $foo
+  ;; CHECK:      (func $foo (type $none_=>_none)
   ;; CHECK-NEXT:  (call $call-without-effects
   ;; CHECK-NEXT:   (i32.const 1)
   ;; CHECK-NEXT:   (ref.func $target-keep)
@@ -968,7 +965,7 @@
     )
   )
 
-  ;; CHECK:      (func $target-keep (param $x i32)
+  ;; CHECK:      (func $target-keep (type $A) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 1)
   ;; CHECK-NEXT:  )
@@ -979,7 +976,7 @@
     )
   )
 
-  ;; CHECK:      (func $target-drop (param $x i32)
+  ;; CHECK:      (func $target-drop (type $A) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (unreachable)
   ;; CHECK-NEXT:  )
@@ -1001,7 +998,7 @@
 
   ;; CHECK:      (type $funcref_=>_none (func (param funcref)))
 
-  ;; CHECK:      (type $none_=>_none (func))
+  ;; CHECK:      (type $ref?|$A|_=>_none (func (param (ref null $A))))
 
   ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call-without-effects (param i32 funcref)))
   (import "binaryen-intrinsics" "call.without.effects"
@@ -1015,10 +1012,10 @@
 
   ;; CHECK:      (export "foo" (func $foo))
 
-  ;; CHECK:      (func $foo
+  ;; CHECK:      (func $foo (type $ref?|$A|_=>_none) (param $A (ref null $A))
   ;; CHECK-NEXT:  (call $call-without-effects
   ;; CHECK-NEXT:   (i32.const 1)
-  ;; CHECK-NEXT:   (ref.null $A)
+  ;; CHECK-NEXT:   (local.get $A)
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (ref.func $target-keep)
@@ -1027,14 +1024,14 @@
   ;; CHECK-NEXT:   (ref.func $target-keep-2)
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  (func $foo (export "foo")
+  (func $foo (export "foo") (param $A (ref null $A))
     ;; Call the intrinsic without a RefFunc. All we infer here is the type,
     ;; which means we must assume anything with type $A (and a reference) can be
     ;; called, which will keep alive the bodies of both $target-keep and
     ;; $target-keep-2 - no unreachables will be placed in either one.
     (call $call-without-effects
       (i32.const 1)
-      (ref.null $A)
+      (local.get $A)
     )
     (drop
       (ref.func $target-keep)
@@ -1044,7 +1041,7 @@
     )
   )
 
-  ;; CHECK:      (func $target-keep (param $x i32)
+  ;; CHECK:      (func $target-keep (type $A) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 1)
   ;; CHECK-NEXT:  )
@@ -1055,7 +1052,7 @@
     )
   )
 
-  ;; CHECK:      (func $target-keep-2 (param $x i32)
+  ;; CHECK:      (func $target-keep-2 (type $A) (param $x i32)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (i32.const 1)
   ;; CHECK-NEXT:  )
@@ -1086,7 +1083,7 @@
   ;; CHECK:      (export "exported-immutable" (global $exported-immutable))
   (export "exported-immutable" (global $exported-immutable))
 
-  ;; CHECK:      (func $test
+  ;; CHECK:      (func $test (type $none_=>_none)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (global.get $exported-mutable)
   ;; CHECK-NEXT:  )

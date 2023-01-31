@@ -62,13 +62,9 @@ struct LegalizeJSInterface : public Pass {
     setTempRet0 = nullptr;
     getTempRet0 = nullptr;
     auto exportOriginals =
-      !getPassOptions()
-         .getArgumentOrDefault("legalize-js-interface-export-originals", "")
-         .empty();
+      getPassOptions().hasArgument("legalize-js-interface-export-originals");
     exportedHelpers =
-      !getPassOptions()
-         .getArgumentOrDefault("legalize-js-interface-exported-helpers", "")
-         .empty();
+      getPassOptions().hasArgument("legalize-js-interface-exported-helpers");
     // for each illegal export, we must export a legalized stub instead
     std::vector<std::unique_ptr<Export>> newExports;
     for (auto& ex : module->exports) {
@@ -90,7 +86,7 @@ struct LegalizeJSInterface : public Pass {
             // are only called from JS.
             if (!func->imported() && !isDynCall(ex->name)) {
               Builder builder(*module);
-              Name newName = std::string("orig$") + ex->name.str;
+              Name newName = std::string("orig$") + ex->name.toString();
               newExports.push_back(builder.makeExport(
                 newName, func->name, ExternalKind::Function));
             }
@@ -239,7 +235,7 @@ private:
   // JS calls the export, so it must call a legal stub that calls the actual
   // wasm function
   Name makeLegalStub(Function* func, Module* module) {
-    Name legalName(std::string("legalstub$") + func->name.str);
+    Name legalName(std::string("legalstub$") + func->name.toString());
 
     // a method may be exported multiple times
     if (module->getFunctionOrNull(legalName)) {
@@ -292,11 +288,11 @@ private:
   Name makeLegalStubForCalledImport(Function* im, Module* module) {
     Builder builder(*module);
     auto legalIm = make_unique<Function>();
-    legalIm->name = Name(std::string("legalimport$") + im->name.str);
+    legalIm->name = Name(std::string("legalimport$") + im->name.toString());
     legalIm->module = im->module;
     legalIm->base = im->base;
     auto stub = make_unique<Function>();
-    stub->name = Name(std::string("legalfunc$") + im->name.str);
+    stub->name = Name(std::string("legalfunc$") + im->name.toString());
     stub->type = im->type;
 
     auto* call = module->allocator.alloc<Call>();

@@ -10,11 +10,11 @@
 
 
  (rec
-  ;; CHECK:      (type $singleton (struct_subtype  data))
+  ;; CHECK:      (type $singleton (struct ))
   (type $singleton (struct_subtype data))
  )
 
  ;; Use the type so it appears in the output.
- ;; CHECK:      (global $g (ref null $singleton) (ref.null $singleton))
+ ;; CHECK:      (global $g (ref null $singleton) (ref.null none))
  (global $g (ref null $singleton) (ref.null $singleton))
 )

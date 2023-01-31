@@ -23,9 +23,11 @@
 #include "compiler-support.h"
 #include "support/utilities.h"
 
+namespace wasm {
+
 struct FeatureSet {
   enum Feature : uint32_t {
-    MVP = 0,
+    None = 0,
     Atomics = 1 << 0,
     MutableGlobals = 1 << 1,
     TruncSat = 1 << 2,
@@ -44,6 +46,10 @@ struct FeatureSet {
     ExtendedConst = 1 << 14,
     Strings = 1 << 15,
     MultiMemories = 1 << 16,
+    MVP = None,
+    // Keep in sync with llvm default features:
+    // https://github.com/llvm/llvm-project/blob/c7576cb89d6c95f03968076e902d3adfd1996577/clang/lib/Basic/Targets/WebAssembly.cpp#L150-L153
+    Default = SignExt | MutableGlobals,
     // GCNNLocals are opt-in: merely asking for "All" does not apply them. To
     // get all possible values use AllPossible. See setAll() below for more
     // details.
@@ -107,7 +113,7 @@ struct FeatureSet {
     return ret;
   }
 
-  FeatureSet() : features(MVP) {}
+  FeatureSet() : features(None) {}
   FeatureSet(uint32_t features) : features(features) {}
   operator uint32_t() const { return features; }
 
@@ -200,5 +206,7 @@ struct FeatureSet {
 
   uint32_t features;
 };
+
+} // namespace wasm
 
 #endif // wasm_features_h

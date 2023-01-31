@@ -15,6 +15,7 @@
  */
 
 #include "module-utils.h"
+#include "ir/intrinsics.h"
 #include "support/insert_ordered.h"
 #include "support/topological_sort.h"
 
@@ -40,6 +41,11 @@ struct Counts : public InsertOrderedMap<HeapType, size_t> {
       (*this)[type];
     }
   }
+  void include(Type type) {
+    for (HeapType ht : type.getHeapTypeChildren()) {
+      include(ht);
+    }
+  }
 };
 
 struct CodeScanner
@@ -61,25 +67,36 @@ struct CodeScanner
       counts.note(curr->type);
     } else if (curr->is<ArrayNew>()) {
       counts.note(curr->type);
+    } else if (curr->is<ArrayNewSeg>()) {
+      counts.note(curr->type);
     } else if (curr->is<ArrayInit>()) {
       counts.note(curr->type);
     } else if (auto* cast = curr->dynCast<RefCast>()) {
-      counts.note(cast->intendedType);
+      counts.note(cast->type);
     } else if (auto* cast = curr->dynCast<RefTest>()) {
-      counts.note(cast->intendedType);
+      counts.note(cast->castType);
     } else if (auto* cast = curr->dynCast<BrOn>()) {
       if (cast->op == BrOnCast || cast->op == BrOnCastFail) {
-        counts.note(cast->intendedType);
+        counts.note(cast->castType);
       }
     } else if (auto* get = curr->dynCast<StructGet>()) {
       counts.note(get->ref->type);
+      // If the type we read is a reference type then we must include it. It is
+      // not written in the binary format, so it doesn't need to be counted, but
+      // it does need to be taken into account in the IR (this may be the only
+      // place this type appears in the entire binary, and we must scan all
+      // types as the analyses that use us depend on that). TODO: This is kind
+      // of a hack, so it would be nice to remove. If we could remove it, we
+      // could also remove some of the pruning logic in getHeapTypeCounts below.
+      counts.include(get->type);
     } else if (auto* set = curr->dynCast<StructSet>()) {
       counts.note(set->ref->type);
     } else if (auto* get = curr->dynCast<ArrayGet>()) {
       counts.note(get->ref->type);
+      // See note on StructGet above.
+      counts.include(get->type);
     } else if (auto* set = curr->dynCast<ArraySet>()) {
       counts.note(set->ref->type);
-
     } else if (Properties::isControlFlowStructure(curr)) {
       if (curr->type.isTuple()) {
         // TODO: Allow control flow to have input types as well
@@ -91,7 +108,10 @@ struct CodeScanner
   }
 };
 
-Counts getHeapTypeCounts(Module& wasm) {
+// Count the number of times each heap type that would appear in the binary is
+// referenced. If `prune`, exclude types that are never referenced, even though
+// a binary would be invalid without them.
+Counts getHeapTypeCounts(Module& wasm, bool prune = false) {
   // Collect module-level info.
   Counts counts;
   CodeScanner(wasm, counts).walkModuleCode(&wasm);
@@ -124,6 +144,19 @@ Counts getHeapTypeCounts(Module& wasm) {
   for (auto& [_, functionCounts] : analysis.map) {
     for (auto& [sig, count] : functionCounts) {
       counts[sig] += count;
+    }
+  }
+
+  if (prune) {
+    // Remove types that are not actually used.
+    auto it = counts.begin();
+    while (it != counts.end()) {
+      if (it->second == 0) {
+        auto deleted = it++;
+        counts.erase(deleted);
+      } else {
+        ++it;
+      }
     }
   }
 
@@ -164,12 +197,14 @@ Counts getHeapTypeCounts(Module& wasm) {
     }
 
     // Make sure we've noted the complete recursion group of each type as well.
-    auto recGroup = ht.getRecGroup();
-    if (includedGroups.insert(recGroup).second) {
-      for (auto type : recGroup) {
-        if (!counts.count(type)) {
-          newTypes.insert(type);
-          counts.include(type);
+    if (!prune) {
+      auto recGroup = ht.getRecGroup();
+      if (includedGroups.insert(recGroup).second) {
+        for (auto type : recGroup) {
+          if (!counts.count(type)) {
+            newTypes.insert(type);
+            counts.include(type);
+          }
         }
       }
     }
@@ -184,10 +219,91 @@ void setIndices(IndexedHeapTypes& indexedTypes) {
   }
 }
 
+InsertOrderedSet<HeapType> getPublicTypeSet(Module& wasm) {
+  InsertOrderedSet<HeapType> publicTypes;
+
+  auto notePublic = [&](HeapType type) {
+    if (type.isBasic()) {
+      return;
+    }
+    // All the rec group members are public as well.
+    for (auto member : type.getRecGroup()) {
+      if (!publicTypes.insert(member)) {
+        // We've already inserted this rec group.
+        break;
+      }
+    }
+  };
+
+  // TODO: Consider Tags as well, but they should store HeapTypes instead of
+  // Signatures first.
+  ModuleUtils::iterImportedTables(wasm, [&](Table* table) {
+    assert(table->type.isRef());
+    notePublic(table->type.getHeapType());
+  });
+  ModuleUtils::iterImportedGlobals(wasm, [&](Global* global) {
+    if (global->type.isRef()) {
+      notePublic(global->type.getHeapType());
+    }
+  });
+  ModuleUtils::iterImportedFunctions(wasm, [&](Function* func) {
+    // We can ignore call.without.effects, which is implemented as an import but
+    // functionally is a call within the module.
+    if (!Intrinsics(wasm).isCallWithoutEffects(func)) {
+      notePublic(func->type);
+    }
+  });
+  for (auto& ex : wasm.exports) {
+    switch (ex->kind) {
+      case ExternalKind::Function: {
+        auto* func = wasm.getFunction(ex->value);
+        notePublic(func->type);
+        continue;
+      }
+      case ExternalKind::Table: {
+        auto* table = wasm.getTable(ex->value);
+        assert(table->type.isRef());
+        notePublic(table->type.getHeapType());
+        continue;
+      }
+      case ExternalKind::Memory:
+        // Never a reference type.
+        continue;
+      case ExternalKind::Global: {
+        auto* global = wasm.getGlobal(ex->value);
+        if (global->type.isRef()) {
+          notePublic(global->type.getHeapType());
+        }
+        continue;
+      }
+      case ExternalKind::Tag:
+        // TODO
+        continue;
+      case ExternalKind::Invalid:
+        break;
+    }
+    WASM_UNREACHABLE("unexpected export kind");
+  }
+
+  // Find all the other public types reachable from directly publicized types.
+  std::vector<HeapType> workList(publicTypes.begin(), publicTypes.end());
+  while (workList.size()) {
+    auto curr = workList.back();
+    workList.pop_back();
+    for (auto t : curr.getReferencedHeapTypes()) {
+      if (!t.isBasic() && publicTypes.insert(t)) {
+        workList.push_back(t);
+      }
+    }
+  }
+
+  return publicTypes;
+}
+
 } // anonymous namespace
 
 std::vector<HeapType> collectHeapTypes(Module& wasm) {
-  Counts counts = getHeapTypeCounts(wasm);
+  auto counts = getHeapTypeCounts(wasm);
   std::vector<HeapType> types;
   types.reserve(counts.size());
   for (auto& [type, _] : counts) {
@@ -196,27 +312,31 @@ std::vector<HeapType> collectHeapTypes(Module& wasm) {
   return types;
 }
 
+std::vector<HeapType> getPublicHeapTypes(Module& wasm) {
+  auto publicTypes = getPublicTypeSet(wasm);
+  std::vector<HeapType> types;
+  types.reserve(publicTypes.size());
+  for (auto type : publicTypes) {
+    types.push_back(type);
+  }
+  return types;
+}
+
+std::vector<HeapType> getPrivateHeapTypes(Module& wasm) {
+  auto usedTypes = getHeapTypeCounts(wasm, true);
+  auto publicTypes = getPublicTypeSet(wasm);
+  std::vector<HeapType> types;
+  for (auto& [type, _] : usedTypes) {
+    if (!publicTypes.count(type)) {
+      types.push_back(type);
+    }
+  }
+  return types;
+}
+
 IndexedHeapTypes getOptimizedIndexedHeapTypes(Module& wasm) {
   TypeSystem system = getTypeSystem();
   Counts counts = getHeapTypeCounts(wasm);
-
-  if (system == TypeSystem::Equirecursive) {
-    // Sort by frequency and then original insertion order.
-    std::vector<std::pair<HeapType, size_t>> sorted(counts.begin(),
-                                                    counts.end());
-    std::stable_sort(sorted.begin(), sorted.end(), [&](auto a, auto b) {
-      return a.second > b.second;
-    });
-
-    // Collect the results.
-    IndexedHeapTypes indexedTypes;
-    for (Index i = 0; i < sorted.size(); ++i) {
-      indexedTypes.types.push_back(sorted[i].first);
-    }
-
-    setIndices(indexedTypes);
-    return indexedTypes;
-  }
 
   // Types have to be arranged into topologically ordered recursion groups.
   // Under isorecrsive typing, the topological sort has to take all referenced
@@ -271,9 +391,6 @@ IndexedHeapTypes getOptimizedIndexedHeapTypes(Module& wasm) {
           info.preds.insert(super->getRecGroup());
         }
         break;
-      case TypeSystem::Equirecursive:
-        WASM_UNREACHABLE(
-          "Equirecursive types should already have been handled");
     }
   }
 

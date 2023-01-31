@@ -27,7 +27,7 @@ Name RETURN_FLOW("*return:)*");
 Name NONCONSTANT_FLOW("*nonconstant:)*");
 
 namespace BinaryConsts {
-namespace UserSections {
+namespace CustomSections {
 const char* Name = "name";
 const char* SourceMapUrl = "sourceMappingURL";
 const char* Dylink = "dylink";
@@ -51,7 +51,7 @@ const char* RelaxedSIMDFeature = "relaxed-simd";
 const char* ExtendedConstFeature = "extended-const";
 const char* StringsFeature = "strings";
 const char* MultiMemoriesFeature = "multi-memories";
-} // namespace UserSections
+} // namespace CustomSections
 } // namespace BinaryConsts
 
 Name STACK_POINTER("__stack_pointer");
@@ -796,13 +796,16 @@ void MemoryGrow::finalize() {
   }
 }
 
-void RefNull::finalize(HeapType heapType) { type = Type(heapType, Nullable); }
+void RefNull::finalize(HeapType heapType) {
+  assert(heapType.isBottom());
+  type = Type(heapType, Nullable);
+}
 
 void RefNull::finalize(Type type_) { type = type_; }
 
 void RefNull::finalize() {}
 
-void RefIs::finalize() {
+void RefIsNull::finalize() {
   if (value->type == Type::unreachable) {
     type = Type::unreachable;
   } else {
@@ -942,10 +945,11 @@ void RefTest::finalize() {
 void RefCast::finalize() {
   if (ref->type == Type::unreachable) {
     type = Type::unreachable;
-  } else {
-    // The output of ref.cast may be null if the input is null (in that case the
-    // null is passed through).
-    type = Type(intendedType, ref->type.getNullability());
+    return;
+  }
+  // Do not unnecessarily lose non-nullability information.
+  if (ref->type.isNonNullable() && type.isNullable()) {
+    type = Type(type.getHeapType(), NonNullable);
   }
 }
 
@@ -965,25 +969,24 @@ void BrOn::finalize() {
       type = Type::none;
       break;
     case BrOnCast:
-    case BrOnFunc:
-    case BrOnData:
-    case BrOnI31:
-      // If we do not branch, we return the input in this case.
-      type = ref->type;
+      if (castType.isNullable()) {
+        // Nulls take the branch, so the result is non-nullable.
+        type = Type(ref->type.getHeapType(), NonNullable);
+      } else {
+        // Nulls do not take the branch, so the result is non-nullable only if
+        // the input is.
+        type = ref->type;
+      }
       break;
     case BrOnCastFail:
-      // If we do not branch, the cast worked, and we have something of the cast
-      // type.
-      type = Type(intendedType, NonNullable);
-      break;
-    case BrOnNonFunc:
-      type = Type(HeapType::func, NonNullable);
-      break;
-    case BrOnNonData:
-      type = Type(HeapType::data, NonNullable);
-      break;
-    case BrOnNonI31:
-      type = Type(HeapType::i31, NonNullable);
+      if (castType.isNullable()) {
+        // Nulls do not take the branch, so the result is non-nullable only if
+        // the input is.
+        type = Type(castType.getHeapType(), ref->type.getNullability());
+      } else {
+        // Nulls take the branch, so the result is non-nullable.
+        type = castType;
+      }
       break;
     default:
       WASM_UNREACHABLE("invalid br_on_*");
@@ -1004,21 +1007,22 @@ Type BrOn::getSentType() {
       // BrOnNonNull sends the non-nullable type on the branch.
       return Type(ref->type.getHeapType(), NonNullable);
     case BrOnCast:
+      // The same as the result type of br_on_cast_fail.
+      if (castType.isNullable()) {
+        return Type(castType.getHeapType(), ref->type.getNullability());
+      } else {
+        return castType;
+      }
+    case BrOnCastFail:
+      // The same as the result type of br_on_cast (if reachable).
       if (ref->type == Type::unreachable) {
         return Type::unreachable;
       }
-      return Type(intendedType, NonNullable);
-    case BrOnFunc:
-      return Type(HeapType::func, NonNullable);
-    case BrOnData:
-      return Type(HeapType::data, NonNullable);
-    case BrOnI31:
-      return Type(HeapType::i31, NonNullable);
-    case BrOnCastFail:
-    case BrOnNonFunc:
-    case BrOnNonData:
-    case BrOnNonI31:
-      return ref->type;
+      if (castType.isNullable()) {
+        return Type(ref->type.getHeapType(), NonNullable);
+      } else {
+        return ref->type;
+      }
     default:
       WASM_UNREACHABLE("invalid br_on_*");
   }
@@ -1033,7 +1037,7 @@ void StructNew::finalize() {
 void StructGet::finalize() {
   if (ref->type == Type::unreachable) {
     type = Type::unreachable;
-  } else {
+  } else if (!ref->type.isNull()) {
     type = ref->type.getHeapType().getStruct().fields[index].type;
   }
 }
@@ -1050,7 +1054,12 @@ void ArrayNew::finalize() {
   if (size->type == Type::unreachable ||
       (init && init->type == Type::unreachable)) {
     type = Type::unreachable;
-    return;
+  }
+}
+
+void ArrayNewSeg::finalize() {
+  if (offset->type == Type::unreachable || size->type == Type::unreachable) {
+    type = Type::unreachable;
   }
 }
 
@@ -1066,7 +1075,7 @@ void ArrayInit::finalize() {
 void ArrayGet::finalize() {
   if (ref->type == Type::unreachable || index->type == Type::unreachable) {
     type = Type::unreachable;
-  } else {
+  } else if (!ref->type.isNull()) {
     type = ref->type.getHeapType().getArray().element.type;
   }
 }
@@ -1109,15 +1118,6 @@ void RefAs::finalize() {
     case RefAsNonNull:
       type = Type(value->type.getHeapType(), NonNullable);
       break;
-    case RefAsFunc:
-      type = Type(HeapType::func, NonNullable);
-      break;
-    case RefAsData:
-      type = Type(HeapType::data, NonNullable);
-      break;
-    case RefAsI31:
-      type = Type(HeapType::i31, NonNullable);
-      break;
     case ExternInternalize:
       type = Type(HeapType::any, value->type.getNullability());
       break;
@@ -1134,7 +1134,7 @@ void StringNew::finalize() {
       (length && length->type == Type::unreachable)) {
     type = Type::unreachable;
   } else {
-    type = Type(HeapType::string, NonNullable);
+    type = Type(HeapType::string, try_ ? Nullable : NonNullable);
   }
 }
 
@@ -1270,6 +1270,7 @@ Name Function::getLocalName(Index index) { return localNames.at(index); }
 void Function::setLocalName(Index index, Name name) {
   assert(index < getNumLocals());
   localNames[index] = name;
+  localIndices[name] = index;
 }
 
 Name Function::getLocalNameOrDefault(Index index) {

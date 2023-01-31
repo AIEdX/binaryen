@@ -3,11 +3,11 @@
 ;; RUN: foreach %s %t wasm-opt --precompute-propagate -all --nominal -S -o - | filecheck %s
 
 (module
-  ;; CHECK:      (type $struct-imm (struct_subtype (field i32) data))
-  (type $struct-imm (struct_subtype i32 data))
+  ;; CHECK:      (type $struct-imm (struct (field i32)))
+  (type $struct-imm (struct i32))
 
-  ;; CHECK:      (type $struct-mut (struct_subtype (field (mut i32)) data))
-  (type $struct-mut (struct_subtype (mut i32) data))
+  ;; CHECK:      (type $struct-mut (struct (field (mut i32))))
+  (type $struct-mut (struct (mut i32)))
 
   ;; CHECK:      (func $propagate (type $none_=>_none)
   ;; CHECK-NEXT:  (local $ref-imm (ref null $struct-imm))
@@ -94,6 +94,7 @@
   ;; CHECK-NEXT:    (drop
   ;; CHECK-NEXT:     (unreachable)
   ;; CHECK-NEXT:    )
+  ;; CHECK-NEXT:    (unreachable)
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT:  (call $helper
@@ -136,8 +137,11 @@
   ;; CHECK:      (func $local-null (type $none_=>_none)
   ;; CHECK-NEXT:  (local $ref-imm (ref null $struct-imm))
   ;; CHECK-NEXT:  (call $helper
-  ;; CHECK-NEXT:   (struct.get $struct-imm 0
-  ;; CHECK-NEXT:    (ref.null $struct-imm)
+  ;; CHECK-NEXT:   (block ;; (replaces something unreachable we can't emit)
+  ;; CHECK-NEXT:    (drop
+  ;; CHECK-NEXT:     (ref.null none)
+  ;; CHECK-NEXT:    )
+  ;; CHECK-NEXT:    (unreachable)
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
@@ -354,8 +358,8 @@
 (module
   ;; One field is immutable, the other is not, so we can only propagate the
   ;; former.
-  ;; CHECK:      (type $struct (struct_subtype (field (mut i32)) (field i32) data))
-  (type $struct (struct_subtype (mut i32) i32 data))
+  ;; CHECK:      (type $struct (struct (field (mut i32)) (field i32)))
+  (type $struct (struct (mut i32) i32))
 
   ;; CHECK:      (func $propagate (type $none_=>_none)
   ;; CHECK-NEXT:  (local $ref (ref null $struct))
@@ -406,11 +410,11 @@
   ;; Create an immutable vtable in an immutable field, which lets us read from
   ;; it.
 
-  ;; CHECK:      (type $object (struct_subtype (field (ref $vtable)) data))
+  ;; CHECK:      (type $object (struct (field (ref $vtable))))
 
-  ;; CHECK:      (type $vtable (struct_subtype (field funcref) data))
-  (type $vtable (struct_subtype funcref data))
-  (type $object (struct_subtype (ref $vtable) data))
+  ;; CHECK:      (type $vtable (struct (field funcref)))
+  (type $vtable (struct funcref))
+  (type $object (struct (ref $vtable)))
 
   ;; CHECK:      (func $nested-creations (type $none_=>_none)
   ;; CHECK-NEXT:  (local $ref (ref null $object))
@@ -454,11 +458,11 @@
 (module
   ;; As above, but make $vtable not immutable, which prevents optimization.
 
-  ;; CHECK:      (type $object (struct_subtype (field (ref $vtable)) data))
+  ;; CHECK:      (type $object (struct (field (ref $vtable))))
 
-  ;; CHECK:      (type $vtable (struct_subtype (field (mut funcref)) data))
-  (type $vtable (struct_subtype (mut funcref) data))
-  (type $object (struct_subtype (ref $vtable) data))
+  ;; CHECK:      (type $vtable (struct (field (mut funcref))))
+  (type $vtable (struct (mut funcref)))
+  (type $object (struct (ref $vtable)))
 
   ;; CHECK:      (func $nested-creations (type $none_=>_none)
   ;; CHECK-NEXT:  (local $ref (ref null $object))
@@ -507,11 +511,11 @@
 (module
   ;; As above, but make $object not immutable, which prevents optimization.
 
-  ;; CHECK:      (type $object (struct_subtype (field (mut (ref $vtable))) data))
+  ;; CHECK:      (type $object (struct (field (mut (ref $vtable)))))
 
-  ;; CHECK:      (type $vtable (struct_subtype (field funcref) data))
-  (type $vtable (struct_subtype funcref data))
-  (type $object (struct_subtype (mut (ref $vtable)) data))
+  ;; CHECK:      (type $vtable (struct (field funcref)))
+  (type $vtable (struct funcref))
+  (type $object (struct (mut (ref $vtable))))
 
   ;; CHECK:      (func $nested-creations (type $none_=>_none)
   ;; CHECK-NEXT:  (local $ref (ref null $object))
@@ -558,10 +562,10 @@
   ;; Create an immutable vtable in an immutable global, which we can optimize
   ;; with.
 
-  ;; CHECK:      (type $vtable (struct_subtype (field funcref) data))
-  (type $vtable (struct_subtype funcref data))
-  ;; CHECK:      (type $object (struct_subtype (field (ref $vtable)) data))
-  (type $object (struct_subtype (ref $vtable) data))
+  ;; CHECK:      (type $vtable (struct (field funcref)))
+  (type $vtable (struct funcref))
+  ;; CHECK:      (type $object (struct (field (ref $vtable))))
+  (type $object (struct (ref $vtable)))
 
   ;; CHECK:      (global $vtable (ref $vtable) (struct.new $vtable
   ;; CHECK-NEXT:  (ref.func $nested-creations)
@@ -609,10 +613,10 @@
   ;; Create an immutable vtable in an mutable global, whose mutability prevents
   ;; optimization.
 
-  ;; CHECK:      (type $vtable (struct_subtype (field funcref) data))
-  (type $vtable (struct_subtype funcref data))
-  ;; CHECK:      (type $object (struct_subtype (field (ref $vtable)) data))
-  (type $object (struct_subtype (ref $vtable) data))
+  ;; CHECK:      (type $vtable (struct (field funcref)))
+  (type $vtable (struct funcref))
+  ;; CHECK:      (type $object (struct (field (ref $vtable))))
+  (type $object (struct (ref $vtable)))
 
   ;; CHECK:      (global $vtable (mut (ref $vtable)) (struct.new $vtable
   ;; CHECK-NEXT:  (ref.func $nested-creations)
@@ -664,10 +668,10 @@
   ;; Create an immutable vtable in an immutable global, but using an array
   ;; instead of a struct.
 
-  ;; CHECK:      (type $vtable (array_subtype funcref data))
-  (type $vtable (array_subtype funcref data))
-  ;; CHECK:      (type $object (struct_subtype (field (ref $vtable)) data))
-  (type $object (struct_subtype (ref $vtable) data))
+  ;; CHECK:      (type $vtable (array funcref))
+  (type $vtable (array funcref))
+  ;; CHECK:      (type $object (struct (field (ref $vtable))))
+  (type $object (struct (ref $vtable)))
 
   ;; CHECK:      (global $vtable (ref $vtable) (array.init_static $vtable
   ;; CHECK-NEXT:  (ref.func $nested-creations)
@@ -735,17 +739,17 @@
   ;; data that is filled with vtables of different types. On usage, we do a
   ;; cast of the vtable type.
 
-  ;; CHECK:      (type $itable (array_subtype dataref data))
-  (type $itable (array_subtype (ref null data) data))
+  ;; CHECK:      (type $itable (array structref))
+  (type $itable (array (ref null struct)))
 
-  ;; CHECK:      (type $object (struct_subtype (field (ref $itable)) data))
-  (type $object (struct_subtype (ref $itable) data))
+  ;; CHECK:      (type $object (struct (field (ref $itable))))
+  (type $object (struct (ref $itable)))
 
-  ;; CHECK:      (type $vtable-0 (struct_subtype (field funcref) data))
-  (type $vtable-0 (struct_subtype funcref data))
+  ;; CHECK:      (type $vtable-0 (struct (field funcref)))
+  (type $vtable-0 (struct funcref))
 
-  ;; CHECK:      (type $vtable-1 (struct_subtype (field funcref) data))
-  (type $vtable-1 (struct_subtype funcref data))
+  ;; CHECK:      (type $vtable-1 (struct (field funcref)))
+  (type $vtable-1 (struct funcref))
 
   ;; CHECK:      (global $itable (ref $itable) (array.init_static $itable
   ;; CHECK-NEXT:  (struct.new $vtable-0
@@ -790,7 +794,7 @@
     ;; We can precompute all these operations away into the final constants.
     (call $helper
       (struct.get $vtable-0 0
-        (ref.cast_static $vtable-0
+        (ref.cast null $vtable-0
           (array.get $itable
             (struct.get $object 0
               (local.get $ref)
@@ -802,7 +806,7 @@
     )
     (call $helper
       (struct.get $vtable-1 0
-        (ref.cast_static $vtable-1
+        (ref.cast null $vtable-1
           (array.get $itable
             (struct.get $object 0
               (local.get $ref)

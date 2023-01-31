@@ -195,6 +195,14 @@ public:
     ret->finalize(type);
     return ret;
   }
+  Block*
+  makeBlock(Name name, const std::vector<Expression*>& items, Type type) {
+    auto* ret = wasm.allocator.alloc<Block>();
+    ret->name = name;
+    ret->list.set(items);
+    ret->finalize(type);
+    return ret;
+  }
   Block* makeBlock(const ExpressionList& items) {
     auto* ret = wasm.allocator.alloc<Block>();
     ret->list.set(items);
@@ -367,7 +375,7 @@ public:
   }
   Load* makeLoad(unsigned bytes,
                  bool signed_,
-                 uint32_t offset,
+                 Address offset,
                  unsigned align,
                  Expression* ptr,
                  Type type,
@@ -384,7 +392,7 @@ public:
     return ret;
   }
   Load* makeAtomicLoad(
-    unsigned bytes, uint32_t offset, Expression* ptr, Type type, Name memory) {
+    unsigned bytes, Address offset, Expression* ptr, Type type, Name memory) {
     Load* load = makeLoad(bytes, false, offset, bytes, ptr, type, memory);
     load->isAtomic = true;
     return load;
@@ -419,7 +427,7 @@ public:
   }
   AtomicFence* makeAtomicFence() { return wasm.allocator.alloc<AtomicFence>(); }
   Store* makeStore(unsigned bytes,
-                   uint32_t offset,
+                   Address offset,
                    unsigned align,
                    Expression* ptr,
                    Expression* value,
@@ -439,7 +447,7 @@ public:
     return ret;
   }
   Store* makeAtomicStore(unsigned bytes,
-                         uint32_t offset,
+                         Address offset,
                          Expression* ptr,
                          Expression* value,
                          Type type,
@@ -450,7 +458,7 @@ public:
   }
   AtomicRMW* makeAtomicRMW(AtomicRMWOp op,
                            unsigned bytes,
-                           uint32_t offset,
+                           Address offset,
                            Expression* ptr,
                            Expression* value,
                            Type type,
@@ -467,7 +475,7 @@ public:
     return ret;
   }
   AtomicCmpxchg* makeAtomicCmpxchg(unsigned bytes,
-                                   uint32_t offset,
+                                   Address offset,
                                    Expression* ptr,
                                    Expression* expected,
                                    Expression* replacement,
@@ -699,17 +707,17 @@ public:
   }
   RefNull* makeRefNull(HeapType type) {
     auto* ret = wasm.allocator.alloc<RefNull>();
-    ret->finalize(Type(type, Nullable));
+    ret->finalize(Type(type.getBottom(), Nullable));
     return ret;
   }
   RefNull* makeRefNull(Type type) {
+    assert(type.isNullable() && type.isNull());
     auto* ret = wasm.allocator.alloc<RefNull>();
     ret->finalize(type);
     return ret;
   }
-  RefIs* makeRefIs(RefIsOp op, Expression* value) {
-    auto* ret = wasm.allocator.alloc<RefIs>();
-    ret->op = op;
+  RefIsNull* makeRefIsNull(Expression* value) {
+    auto* ret = wasm.allocator.alloc<RefIsNull>();
     ret->value = value;
     ret->finalize();
     return ret;
@@ -867,36 +875,28 @@ public:
     ret->finalize();
     return ret;
   }
-  RefTest* makeRefTest(Expression* ref, HeapType intendedType) {
+  RefTest* makeRefTest(Expression* ref, Type castType) {
     auto* ret = wasm.allocator.alloc<RefTest>();
     ret->ref = ref;
-    ret->intendedType = intendedType;
+    ret->castType = castType;
     ret->finalize();
     return ret;
   }
-  RefCast*
-  makeRefCast(Expression* ref, HeapType intendedType, RefCast::Safety safety) {
+  RefCast* makeRefCast(Expression* ref, Type type, RefCast::Safety safety) {
     auto* ret = wasm.allocator.alloc<RefCast>();
     ret->ref = ref;
-    ret->intendedType = intendedType;
+    ret->type = type;
     ret->safety = safety;
     ret->finalize();
     return ret;
   }
-  BrOn* makeBrOn(BrOnOp op, Name name, Expression* ref) {
+  BrOn*
+  makeBrOn(BrOnOp op, Name name, Expression* ref, Type castType = Type::none) {
     auto* ret = wasm.allocator.alloc<BrOn>();
     ret->op = op;
     ret->name = name;
     ret->ref = ref;
-    ret->finalize();
-    return ret;
-  }
-  BrOn* makeBrOn(BrOnOp op, Name name, Expression* ref, HeapType intendedType) {
-    auto* ret = wasm.allocator.alloc<BrOn>();
-    ret->op = op;
-    ret->name = name;
-    ret->ref = ref;
-    ret->intendedType = intendedType;
+    ret->castType = castType;
     ret->finalize();
     return ret;
   }
@@ -934,6 +934,20 @@ public:
     ret->finalize();
     return ret;
   }
+  ArrayNewSeg* makeArrayNewSeg(ArrayNewSegOp op,
+                               HeapType type,
+                               Index seg,
+                               Expression* offset,
+                               Expression* size) {
+    auto* ret = wasm.allocator.alloc<ArrayNewSeg>();
+    ret->op = op;
+    ret->segment = seg;
+    ret->offset = offset;
+    ret->size = size;
+    ret->type = Type(type, NonNullable);
+    ret->finalize();
+    return ret;
+  }
   ArrayInit* makeArrayInit(HeapType type,
                            const std::vector<Expression*>& values) {
     auto* ret = wasm.allocator.alloc<ArrayInit>();
@@ -942,11 +956,14 @@ public:
     ret->finalize();
     return ret;
   }
-  ArrayGet*
-  makeArrayGet(Expression* ref, Expression* index, bool signed_ = false) {
+  ArrayGet* makeArrayGet(Expression* ref,
+                         Expression* index,
+                         Type type,
+                         bool signed_ = false) {
     auto* ret = wasm.allocator.alloc<ArrayGet>();
     ret->ref = ref;
     ret->index = index;
+    ret->type = type;
     ret->signed_ = signed_;
     ret->finalize();
     return ret;
@@ -987,24 +1004,29 @@ public:
     ret->finalize();
     return ret;
   }
-  StringNew*
-  makeStringNew(StringNewOp op, Expression* ptr, Expression* length) {
+  StringNew* makeStringNew(StringNewOp op,
+                           Expression* ptr,
+                           Expression* length,
+                           bool try_) {
     auto* ret = wasm.allocator.alloc<StringNew>();
     ret->op = op;
     ret->ptr = ptr;
     ret->length = length;
+    ret->try_ = try_;
     ret->finalize();
     return ret;
   }
   StringNew* makeStringNew(StringNewOp op,
                            Expression* ptr,
                            Expression* start,
-                           Expression* end) {
+                           Expression* end,
+                           bool try_) {
     auto* ret = wasm.allocator.alloc<StringNew>();
     ret->op = op;
     ret->ptr = ptr;
     ret->start = start;
     ret->end = end;
+    ret->try_ = try_;
     ret->finalize();
     return ret;
   }
@@ -1040,8 +1062,9 @@ public:
     ret->finalize();
     return ret;
   }
-  StringEq* makeStringEq(Expression* left, Expression* right) {
+  StringEq* makeStringEq(StringEqOp op, Expression* left, Expression* right) {
     auto* ret = wasm.allocator.alloc<StringEq>();
+    ret->op = op;
     ret->left = left;
     ret->right = right;
     ret->finalize();
@@ -1262,7 +1285,7 @@ public:
     if (curr->type.isTuple() && curr->type.isDefaultable()) {
       return makeConstantExpression(Literal::makeZeros(curr->type));
     }
-    if (curr->type.isNullable()) {
+    if (curr->type.isNullable() && curr->type.isNull()) {
       return ExpressionManipulator::refNull(curr, curr->type);
     }
     if (curr->type.isRef() && curr->type.getHeapType() == HeapType::i31) {
@@ -1299,53 +1322,6 @@ public:
         return ExpressionManipulator::unreachable(curr);
     }
     return makeConst(value);
-  }
-};
-
-// This class adds methods that first inspect the input. They may not have fully
-// comprehensive error checking, when that can be left to the validator; the
-// benefit of the validate* methods is that they can share code between the
-// text and binary format parsers, for handling certain situations in the
-// input which preclude even creating valid IR, which the validator depends
-// on.
-class ValidatingBuilder : public Builder {
-  size_t line = -1, col = -1;
-
-public:
-  ValidatingBuilder(Module& wasm, size_t line) : Builder(wasm), line(line) {}
-  ValidatingBuilder(Module& wasm, size_t line, size_t col)
-    : Builder(wasm), line(line), col(col) {}
-
-  Expression* validateAndMakeBrOn(BrOnOp op, Name name, Expression* ref) {
-    if (op == BrOnNull) {
-      if (!ref->type.isRef() && ref->type != Type::unreachable) {
-        throw ParseException("Invalid ref for br_on_null", line, col);
-      }
-    }
-    return makeBrOn(op, name, ref);
-  }
-
-  template<typename T>
-  Expression* validateAndMakeCallRef(Expression* target,
-                                     const T& args,
-                                     bool isReturn = false) {
-    if (!target->type.isRef()) {
-      if (target->type == Type::unreachable) {
-        // An unreachable target is not supported. Similiar to br_on_cast, just
-        // emit an unreachable sequence, since we don't have enough information
-        // to create a full call_ref.
-        auto* block = makeBlock(args);
-        block->list.push_back(target);
-        block->finalize(Type::unreachable);
-        return block;
-      }
-      throw ParseException("Non-reference type for a call_ref", line, col);
-    }
-    auto heapType = target->type.getHeapType();
-    if (!heapType.isSignature()) {
-      throw ParseException("Invalid reference type for a call_ref", line, col);
-    }
-    return makeCallRef(target, args, heapType.getSignature().results, isReturn);
   }
 };
 

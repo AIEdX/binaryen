@@ -48,7 +48,8 @@ enum {
 enum WebLimitations : uint32_t {
   MaxDataSegments = 100 * 1000,
   MaxFunctionBodySize = 128 * 1024,
-  MaxFunctionLocals = 50 * 1000
+  MaxFunctionLocals = 50 * 1000,
+  MaxFunctionParams = 1000
 };
 
 template<typename T, typename MiniT> struct LEB {
@@ -109,7 +110,7 @@ template<typename T, typename MiniT> struct LEB {
       byte = get();
       bool last = !(byte & 128);
       T payload = byte & 127;
-      typedef typename std::make_unsigned<T>::type mask_type;
+      using mask_type = typename std::make_unsigned<T>::type;
       auto shift_mask = 0 == shift
                           ? ~mask_type(0)
                           : ((mask_type(1) << (sizeof(T) * 8 - shift)) - 1u);
@@ -146,10 +147,10 @@ template<typename T, typename MiniT> struct LEB {
   }
 };
 
-typedef LEB<uint32_t, uint8_t> U32LEB;
-typedef LEB<uint64_t, uint8_t> U64LEB;
-typedef LEB<int32_t, int8_t> S32LEB;
-typedef LEB<int64_t, int8_t> S64LEB;
+using U32LEB = LEB<uint32_t, uint8_t>;
+using U64LEB = LEB<uint64_t, uint8_t>;
+using S32LEB = LEB<int32_t, int8_t>;
+using S64LEB = LEB<int64_t, int8_t>;
 
 //
 // We mostly stream into a buffer as we create the binary format, however,
@@ -202,8 +203,7 @@ public:
     return *this;
   }
   BufferWithRandomAccess& operator<<(U32LEB x) {
-    size_t before = -1;
-    WASM_UNUSED(before);
+    [[maybe_unused]] size_t before = -1;
     BYN_DEBUG(before = size(); std::cerr << "writeU32LEB: " << x.value
                                          << " (at " << before << ")"
                                          << std::endl;);
@@ -214,8 +214,7 @@ public:
     return *this;
   }
   BufferWithRandomAccess& operator<<(U64LEB x) {
-    size_t before = -1;
-    WASM_UNUSED(before);
+    [[maybe_unused]] size_t before = -1;
     BYN_DEBUG(before = size(); std::cerr << "writeU64LEB: " << x.value
                                          << " (at " << before << ")"
                                          << std::endl;);
@@ -226,8 +225,7 @@ public:
     return *this;
   }
   BufferWithRandomAccess& operator<<(S32LEB x) {
-    size_t before = -1;
-    WASM_UNUSED(before);
+    [[maybe_unused]] size_t before = -1;
     BYN_DEBUG(before = size(); std::cerr << "writeS32LEB: " << x.value
                                          << " (at " << before << ")"
                                          << std::endl;);
@@ -238,8 +236,7 @@ public:
     return *this;
   }
   BufferWithRandomAccess& operator<<(S64LEB x) {
-    size_t before = -1;
-    WASM_UNUSED(before);
+    [[maybe_unused]] size_t before = -1;
     BYN_DEBUG(before = size(); std::cerr << "writeS64LEB: " << x.value
                                          << " (at " << before << ")"
                                          << std::endl;);
@@ -313,7 +310,7 @@ namespace BinaryConsts {
 enum Meta { Magic = 0x6d736100, Version = 0x01 };
 
 enum Section {
-  User = 0,
+  Custom = 0,
   Type = 1,
   Import = 2,
   Function = 3,
@@ -376,11 +373,16 @@ enum EncodedType {
   // integer reference type
   i31ref = -0x16, // 0x6a
   // gc and string reference types
-  dataref = -0x19,          // 0x67
+  structref = -0x19,        // 0x67
+  arrayref = -0x1a,         // 0x66
   stringref = -0x1c,        // 0x64
   stringview_wtf8 = -0x1d,  // 0x63
   stringview_wtf16 = -0x1e, // 0x62
   stringview_iter = -0x1f,  // 0x61
+  // bottom types
+  nullexternref = -0x17, // 0x69
+  nullfuncref = -0x18,   // 0x68
+  nullref = -0x1b,       // 0x65
   // type forms
   Func = -0x20,   // 0x60
   Struct = -0x21, // 0x5f
@@ -397,22 +399,27 @@ enum EncodedType {
 };
 
 enum EncodedHeapType {
-  func = -0x10,   // 0x70
-  ext = -0x11,    // 0x6f
-  any = -0x12,    // 0x6e
-  eq = -0x13,     // 0x6d
-  i31 = -0x16,    // 0x6a
-  data = -0x19,   // 0x67
-  string = -0x1c, // 0x64
+  func = -0x10,    // 0x70
+  ext = -0x11,     // 0x6f
+  any = -0x12,     // 0x6e
+  eq = -0x13,      // 0x6d
+  i31 = -0x16,     // 0x6a
+  struct_ = -0x19, // 0x67
+  array = -0x1a,   // 0x66
+  string = -0x1c,  // 0x64
   // stringview/iter constants are identical to type, and cannot be duplicated
   // here as that would be a compiler error, so add _heap suffixes. See
   // https://github.com/WebAssembly/stringref/issues/12
   stringview_wtf8_heap = -0x1d,  // 0x63
   stringview_wtf16_heap = -0x1e, // 0x62
   stringview_iter_heap = -0x1f,  // 0x61
+  // bottom types
+  noext = -0x17,  // 0x69
+  nofunc = -0x18, // 0x68
+  none = -0x1b,   // 0x65
 };
 
-namespace UserSections {
+namespace CustomSections {
 extern const char* Name;
 extern const char* SourceMapUrl;
 extern const char* Dylink;
@@ -459,7 +466,7 @@ enum Subsection {
   DylinkNeeded = 2,
 };
 
-} // namespace UserSections
+} // namespace CustomSections
 
 enum ASTNodes {
   Unreachable = 0x00,
@@ -1083,8 +1090,7 @@ enum ASTNodes {
 
   // typed function references opcodes
 
-  CallRefUnannotated = 0x14,
-  CallRef = 0x17,
+  CallRef = 0x14,
   RetCallRef = 0x15,
 
   // gc opcodes
@@ -1096,34 +1102,41 @@ enum ASTNodes {
   StructSet = 0x06,
   StructNew = 0x07,
   StructNewDefault = 0x08,
+  ArrayNewElem = 0x10,
   ArrayGet = 0x13,
   ArrayGetS = 0x14,
   ArrayGetU = 0x15,
   ArraySet = 0x16,
-  ArrayLen = 0x17,
+  ArrayLenAnnotated = 0x17,
   ArrayCopy = 0x18,
+  ArrayLen = 0x19,
   ArrayInitStatic = 0x1a,
   ArrayNew = 0x1b,
   ArrayNewDefault = 0x1c,
+  ArrayNewData = 0x1d,
   I31New = 0x20,
   I31GetS = 0x21,
   I31GetU = 0x22,
+  RefTest = 0x40,
+  RefCast = 0x41,
+  BrOnCast = 0x42,
+  BrOnCastFail = 0x43,
   RefTestStatic = 0x44,
   RefCastStatic = 0x45,
   BrOnCastStatic = 0x46,
   BrOnCastStaticFail = 0x47,
-  RefCastNopStatic = 0x48,
+  RefTestNull = 0x48,
+  RefCastNull = 0x49,
+  BrOnCastNull = 0x4a,
+  BrOnCastFailNull = 0x4b,
+  RefCastNop = 0x4c,
   RefIsFunc = 0x50,
-  RefIsData = 0x51,
   RefIsI31 = 0x52,
   RefAsFunc = 0x58,
-  RefAsData = 0x59,
   RefAsI31 = 0x5a,
   BrOnFunc = 0x60,
-  BrOnData = 0x61,
   BrOnI31 = 0x62,
   BrOnNonFunc = 0x63,
-  BrOnNonData = 0x64,
   BrOnNonI31 = 0x65,
   ExternInternalize = 0x70,
   ExternExternalize = 0x71,
@@ -1137,6 +1150,7 @@ enum ASTNodes {
   StringConcat = 0x88,
   StringEq = 0x89,
   StringIsUSV = 0x8a,
+  StringNewUTF8Try = 0x8f,
   StringAsWTF8 = 0x90,
   StringViewWTF8Advance = 0x91,
   StringViewWTF8Slice = 0x93,
@@ -1149,10 +1163,13 @@ enum ASTNodes {
   StringViewIterAdvance = 0xa2,
   StringViewIterRewind = 0xa3,
   StringViewIterSlice = 0xa4,
+  StringCompare = 0xa8,
+  StringFromCodePoint = 0xa9,
   StringNewWTF8Array = 0xb0,
   StringNewWTF16Array = 0xb1,
   StringEncodeWTF8Array = 0xb2,
   StringEncodeWTF16Array = 0xb3,
+  StringNewUTF8ArrayTry = 0xb8,
 };
 
 enum MemoryAccess {
@@ -1287,7 +1304,7 @@ public:
     Address initial, Address maximum, bool hasMaximum, bool shared, bool is64);
   template<typename T> int32_t startSection(T code);
   void finishSection(int32_t start);
-  int32_t startSubsection(BinaryConsts::UserSections::Subsection code);
+  int32_t startSubsection(BinaryConsts::CustomSections::Subsection code);
   void finishSubsection(int32_t start);
   void writeStart();
   void writeMemories();
@@ -1317,8 +1334,8 @@ public:
   void writeNames();
   void writeSourceMapUrl();
   void writeSymbolMap();
-  void writeLateUserSections();
-  void writeUserSection(const UserSection& section);
+  void writeLateCustomSections();
+  void writeCustomSection(const CustomSection& section);
   void writeFeaturesSection();
   void writeDylinkSection();
   void writeLegacyDylinkSection();
@@ -1332,8 +1349,8 @@ public:
   void writeExtraDebugLocation(Expression* curr, Function* func, size_t id);
 
   // helpers
-  void writeInlineString(const char* name);
-  void writeEscapedName(const char* name);
+  void writeInlineString(std::string_view name);
+  void writeEscapedName(std::string_view name);
   void writeInlineBuffer(const char* data, size_t size);
   void writeData(const char* data, size_t size);
 
@@ -1438,11 +1455,11 @@ public:
     skipFunctionBodies = skipFunctionBodies_;
   }
   void read();
-  void readUserSection(size_t payloadLen);
+  void readCustomSection(size_t payloadLen);
 
   bool more() { return pos < input.size(); }
 
-  std::pair<const char*, const char*> getByteView(size_t size);
+  std::string_view getByteView(size_t size);
   uint8_t getInt8();
   uint16_t getInt16();
   uint32_t getInt32();
@@ -1694,6 +1711,7 @@ public:
   bool maybeVisitStructGet(Expression*& out, uint32_t code);
   bool maybeVisitStructSet(Expression*& out, uint32_t code);
   bool maybeVisitArrayNew(Expression*& out, uint32_t code);
+  bool maybeVisitArrayNewSeg(Expression*& out, uint32_t code);
   bool maybeVisitArrayInit(Expression*& out, uint32_t code);
   bool maybeVisitArrayGet(Expression*& out, uint32_t code);
   bool maybeVisitArraySet(Expression*& out, uint32_t code);
@@ -1720,7 +1738,8 @@ public:
   void visitUnreachable(Unreachable* curr);
   void visitDrop(Drop* curr);
   void visitRefNull(RefNull* curr);
-  void visitRefIs(RefIs* curr, uint8_t code);
+  void visitRefIsNull(RefIsNull* curr);
+  void visitRefIs(RefTest* curr, uint8_t code);
   void visitRefFunc(RefFunc* curr);
   void visitRefEq(RefEq* curr);
   void visitTableGet(TableGet* curr);
@@ -1728,8 +1747,8 @@ public:
   void visitTryOrTryInBlock(Expression*& out);
   void visitThrow(Throw* curr);
   void visitRethrow(Rethrow* curr);
-  void visitCallRef(CallRef* curr,
-                    std::optional<HeapType> maybeType = std::nullopt);
+  void visitCallRef(CallRef* curr);
+  void visitRefAsCast(RefCast* curr, uint32_t code);
   void visitRefAs(RefAs* curr, uint8_t code);
 
   [[noreturn]] void throwError(std::string text);

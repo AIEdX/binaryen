@@ -62,10 +62,13 @@ set(passes_SOURCES
   MergeLocals.cpp
   Metrics.cpp
   MinifyImportsAndExports.cpp
+  Monomorphize.cpp
+  MultiMemoryLowering.cpp
   NameList.cpp
   NameTypes.cpp
   OnceReduction.cpp
   OptimizeAddedConstants.cpp
+  OptimizeCasts.cpp
   OptimizeInstructions.cpp
   OptimizeForJS.cpp
   PickLoadSigns.cpp
@@ -81,6 +84,7 @@ set(passes_SOURCES
   StackIR.cpp
   SignaturePruning.cpp
   SignatureRefining.cpp
+  SignExtLowering.cpp
   Strip.cpp
   StripTargetFeatures.cpp
   RedundantSetElimination.cpp
@@ -90,11 +94,15 @@ set(passes_SOURCES
   RemoveUnusedBrs.cpp
   RemoveUnusedNames.cpp
   RemoveUnusedModuleElements.cpp
-  ReorderLocals.cpp
+  RemoveUnusedTypes.cpp
   ReorderFunctions.cpp
+  ReorderGlobals.cpp
+  ReorderLocals.cpp
   ReReloop.cpp
   TrapMode.cpp
   TypeRefining.cpp
+  TypeMerging.cpp
+  TypeSSA.cpp
   SafeHeap.cpp
   SimplifyGlobals.cpp
   SimplifyLocals.cpp

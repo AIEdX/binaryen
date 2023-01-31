@@ -32,6 +32,7 @@
 
 #include "ir/branch-utils.h"
 #include "ir/debug.h"
+#include "ir/drop.h"
 #include "ir/eh-utils.h"
 #include "ir/element-utils.h"
 #include "ir/literal-utils.h"
@@ -132,7 +133,7 @@ static bool canHandleParams(Function* func) {
   return true;
 }
 
-typedef std::unordered_map<Name, FunctionInfo> NameInfoMap;
+using NameInfoMap = std::unordered_map<Name, FunctionInfo>;
 
 struct FunctionInfoScanner
   : public WalkerPass<PostWalker<FunctionInfoScanner>> {
@@ -251,6 +252,10 @@ struct Updater : public PostWalker<Updater> {
   Name returnName;
   bool isReturn;
   Builder* builder;
+  PassOptions& options;
+
+  Updater(PassOptions& options) : options(options) {}
+
   void visitReturn(Return* curr) {
     replaceCurrent(builder->makeBreak(returnName, curr->value));
   }
@@ -259,7 +264,7 @@ struct Updater : public PostWalker<Updater> {
   // achieve this, make the call a non-return call and add a break. This does
   // not cause unbounded stack growth because inlining and return calling both
   // avoid creating a new stack frame.
-  template<typename T> void handleReturnCall(T* curr, HeapType targetType) {
+  template<typename T> void handleReturnCall(T* curr, Type results) {
     if (isReturn) {
       // If the inlined callsite was already a return_call, then we can keep
       // return_calls in the inlined function rather than downgrading them.
@@ -269,8 +274,10 @@ struct Updater : public PostWalker<Updater> {
       return;
     }
     curr->isReturn = false;
-    curr->type = targetType.getSignature().results;
-    if (curr->type.isConcrete()) {
+    curr->type = results;
+    // There might still be unreachable children causing this to be unreachable.
+    curr->finalize();
+    if (results.isConcrete()) {
       replaceCurrent(builder->makeBreak(returnName, curr));
     } else {
       replaceCurrent(builder->blockify(curr, builder->makeBreak(returnName)));
@@ -278,17 +285,25 @@ struct Updater : public PostWalker<Updater> {
   }
   void visitCall(Call* curr) {
     if (curr->isReturn) {
-      handleReturnCall(curr, module->getFunction(curr->target)->type);
+      handleReturnCall(curr, module->getFunction(curr->target)->getResults());
     }
   }
   void visitCallIndirect(CallIndirect* curr) {
     if (curr->isReturn) {
-      handleReturnCall(curr, curr->heapType);
+      handleReturnCall(curr, curr->heapType.getSignature().results);
     }
   }
   void visitCallRef(CallRef* curr) {
+    Type targetType = curr->target->type;
+    if (targetType.isNull()) {
+      // We don't know what type the call should return, but we can't leave it
+      // as a potentially-invalid return_call_ref, either.
+      replaceCurrent(getDroppedChildrenAndAppend(
+        curr, *module, options, Builder(*module).makeUnreachable()));
+      return;
+    }
     if (curr->isReturn) {
-      handleReturnCall(curr, curr->target->type.getHeapType());
+      handleReturnCall(curr, targetType.getHeapType().getSignature().results);
     }
   }
   void visitLocalGet(LocalGet* curr) {
@@ -301,15 +316,17 @@ struct Updater : public PostWalker<Updater> {
 
 // Core inlining logic. Modifies the outside function (adding locals as
 // needed), and returns the inlined code.
-static Expression*
-doInlining(Module* module, Function* into, const InliningAction& action) {
+static Expression* doInlining(Module* module,
+                              Function* into,
+                              const InliningAction& action,
+                              PassOptions& options) {
   Function* from = action.contents;
   auto* call = (*action.callSite)->cast<Call>();
   // Works for return_call, too
   Type retType = module->getFunction(call->target)->getResults();
   Builder builder(*module);
   auto* block = builder.makeBlock();
-  block->name = Name(std::string("__inlined_func$") + from->name.str);
+  block->name = Name(std::string("__inlined_func$") + from->name.toString());
   // In the unlikely event that the function already has a branch target with
   // this name, fix that up, as otherwise we can get unexpected capture of our
   // branches, that is, we could end up with this:
@@ -321,11 +338,25 @@ doInlining(Module* module, Function* into, const InliningAction& action) {
   //
   // Here the br wants to go to the very outermost block, to represent a
   // return from the inlined function's code, but it ends up captured by an
-  // internal block.
-  if (BranchUtils::hasBranchTarget(from->body, block->name)) {
-    auto existingNames = BranchUtils::getBranchTargets(from->body);
-    block->name = Names::getValidName(
-      block->name, [&](Name test) { return !existingNames.count(test); });
+  // internal block. We also need to be careful of the call's children:
+  //
+  //  (block $X             ;; a new block we add as the target of returns
+  //    (local.set $param
+  //      (call's first parameter
+  //        (br $X)         ;; nested br in call's first parameter
+  //      )
+  //    )
+  //
+  // (In this case we could use a second block and define the named block $X
+  // after the call's parameters, but that adds work for an extremely rare
+  // situation.)
+  if (BranchUtils::hasBranchTarget(from->body, block->name) ||
+      BranchUtils::BranchSeeker::has(call, block->name)) {
+    auto fromNames = BranchUtils::getBranchTargets(from->body);
+    auto callNames = BranchUtils::BranchAccumulator::get(call);
+    block->name = Names::getValidName(block->name, [&](Name test) {
+      return !fromNames.count(test) && !callNames.count(test);
+    });
   }
   if (call->isReturn) {
     if (retType.isConcrete()) {
@@ -337,7 +368,7 @@ doInlining(Module* module, Function* into, const InliningAction& action) {
     *action.callSite = block;
   }
   // Prepare to update the inlined code's locals and other things.
-  Updater updater;
+  Updater updater(options);
   updater.module = module;
   updater.returnName = block->name;
   updater.isReturn = call->isReturn;
@@ -489,8 +520,7 @@ struct FunctionSplitter {
   // perform the splitting (if that has not already been done before).
   Function* getInlineableSplitFunction(Function* func) {
     Function* inlineable = nullptr;
-    auto success = maybeSplit(func, &inlineable);
-    WASM_UNUSED(success);
+    [[maybe_unused]] auto success = maybeSplit(func, &inlineable);
     assert(success && inlineable);
     return inlineable;
   }
@@ -752,7 +782,8 @@ private:
     return ModuleUtils::copyFunction(
       func,
       *module,
-      Names::getValidFunctionName(*module, prefix + '$' + func->name.str));
+      Names::getValidFunctionName(*module,
+                                  prefix + '$' + func->name.toString()));
   }
 
   // Get the i-th item in a sequence of initial items in an expression. That is,
@@ -803,7 +834,7 @@ private:
     if (auto* unary = curr->dynCast<Unary>()) {
       return isSimple(unary->value);
     }
-    if (auto* is = curr->dynCast<RefIs>()) {
+    if (auto* is = curr->dynCast<RefIsNull>()) {
       return isSimple(is->value);
     }
     return false;
@@ -1002,7 +1033,7 @@ struct Inlining : public Pass {
         action.contents = getActuallyInlinedFunction(action.contents);
 
         // Perform the inlining and update counts.
-        doInlining(module, func, action);
+        doInlining(module, func, action, getPassOptions());
         inlinedUses[inlinedName]++;
         inlinedInto.insert(func);
         assert(inlinedUses[inlinedName] <= infos[inlinedName].refs);
@@ -1116,7 +1147,8 @@ struct InlineMainPass : public Pass {
       // No call at all.
       return;
     }
-    doInlining(module, main, InliningAction(callSite, originalMain));
+    doInlining(
+      module, main, InliningAction(callSite, originalMain), getPassOptions());
   }
 };
 

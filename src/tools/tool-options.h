@@ -148,15 +148,6 @@ struct ToolOptions : public Options {
            [](Options* o, const std::string& argument) {
              setTypeSystem(TypeSystem::Nominal);
            })
-      .add("--structural",
-           "",
-           "Force all GC type definitions to be parsed as structural "
-           "(i.e. equirecursive). This is the default.",
-           ToolOptionsCategory,
-           Options::Arguments::Zero,
-           [](Options* o, const std::string& argument) {
-             setTypeSystem(TypeSystem::Equirecursive);
-           })
       .add("--hybrid",
            "",
            "Force all GC type definitions to be parsed using the isorecursive "
@@ -165,7 +156,19 @@ struct ToolOptions : public Options {
            Options::Arguments::Zero,
            [](Options* o, const std::string& argument) {
              setTypeSystem(TypeSystem::Isorecursive);
-           });
+           })
+      .add(
+        "--closed-world",
+        "-cw",
+        "Assume code outside of the module does not inspect or interact with "
+        "GC and function references, even if they are passed out. The outside "
+        "may hold on to them and pass them back in, but not inspect their "
+        "contents or call them.",
+        ToolOptionsCategory,
+        Options::Arguments::Zero,
+        [this](Options*, const std::string&) {
+          passOptions.closedWorld = true;
+        });
   }
 
   ToolOptions& addFeature(FeatureSet::Feature feature,
@@ -196,17 +199,15 @@ struct ToolOptions : public Options {
   void applyFeatures(Module& module) const {
     module.features.enable(enabledFeatures);
     module.features.disable(disabledFeatures);
-    // Non-default type systems only make sense with GC enabled. TODO: Error on
-    // non-GC equirecursive types as well once we make isorecursive the default
-    // if we don't remove equirecursive types entirely.
+    // Non-default type systems only make sense with GC enabled.
     if (!module.features.hasGC() && getTypeSystem() == TypeSystem::Nominal) {
       Fatal() << "Nominal typing is only allowed when GC is enabled";
     }
   }
 
 private:
-  FeatureSet enabledFeatures = FeatureSet::MVP;
-  FeatureSet disabledFeatures = FeatureSet::MVP;
+  FeatureSet enabledFeatures = FeatureSet::Default;
+  FeatureSet disabledFeatures = FeatureSet::None;
 };
 
 } // namespace wasm

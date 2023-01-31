@@ -2,14 +2,14 @@
 ;; RUN: wasm-opt %s --simplify-locals -all -S -o - | filecheck %s
 
 (module
-  ;; CHECK:      (func $test-nn
+  ;; CHECK:      (func $test-nn (type $none_=>_none)
   ;; CHECK-NEXT:  (local $nn anyref)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT:  (try $try
   ;; CHECK-NEXT:   (do
   ;; CHECK-NEXT:    (local.set $nn
   ;; CHECK-NEXT:     (ref.as_non_null
-  ;; CHECK-NEXT:      (ref.null any)
+  ;; CHECK-NEXT:      (ref.null none)
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
   ;; CHECK-NEXT:   )
@@ -49,14 +49,14 @@
     )
   )
 
-  ;; CHECK:      (func $test-nullable
+  ;; CHECK:      (func $test-nullable (type $none_=>_none)
   ;; CHECK-NEXT:  (local $nullable anyref)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT:  (try $try
   ;; CHECK-NEXT:   (do
   ;; CHECK-NEXT:    (local.set $nullable
   ;; CHECK-NEXT:     (ref.as_non_null
-  ;; CHECK-NEXT:      (ref.null any)
+  ;; CHECK-NEXT:      (ref.null none)
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
   ;; CHECK-NEXT:   )

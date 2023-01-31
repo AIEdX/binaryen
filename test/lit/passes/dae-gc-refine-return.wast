@@ -3,33 +3,32 @@
 ;; RUN: wasm-opt %s -all --dae --nominal -S -o - | filecheck %s --check-prefix NOMNL
 
 (module
+
+ ;; CHECK:      (type ${} (struct ))
+ ;; NOMNL:      (type $return_{} (func (result (ref ${}))))
+
+ ;; NOMNL:      (type ${} (struct ))
+ (type ${} (struct))
+
  ;; CHECK:      (type $return_{} (func (result (ref ${}))))
- ;; NOMNL:      (type $return_{} (func_subtype (result (ref ${})) func))
  (type $return_{} (func (result (ref ${}))))
 
- ;; CHECK:      (type ${i32} (struct (field i32)))
-
- ;; CHECK:      (type ${i32_f32} (struct (field i32) (field f32)))
- ;; NOMNL:      (type ${} (struct_subtype  data))
-
+ ;; CHECK:      (type ${i32} (struct_subtype (field i32) ${}))
  ;; NOMNL:      (type ${i32} (struct_subtype (field i32) ${}))
+ (type ${i32} (struct_subtype (field i32) ${}))
 
+ ;; CHECK:      (type ${i32_f32} (struct_subtype (field i32) (field f32) ${i32}))
  ;; NOMNL:      (type ${i32_f32} (struct_subtype (field i32) (field f32) ${i32}))
  (type ${i32_f32} (struct_subtype (field i32) (field f32) ${i32}))
 
- ;; CHECK:      (type ${i32_i64} (struct (field i32) (field i64)))
+ ;; CHECK:      (type ${i32_i64} (struct_subtype (field i32) (field i64) ${i32}))
  ;; NOMNL:      (type ${i32_i64} (struct_subtype (field i32) (field i64) ${i32}))
  (type ${i32_i64} (struct_subtype (field i32) (field i64) ${i32}))
-
- (type ${i32} (struct_subtype (field i32) ${}))
-
- ;; CHECK:      (type ${} (struct ))
- (type ${} (struct))
 
  (table 1 1 funcref)
 
  ;; We cannot refine the return type if nothing is actually returned.
- ;; CHECK:      (func $refine-return-no-return (result anyref)
+ ;; CHECK:      (func $refine-return-no-return (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local.set $temp
  ;; CHECK-NEXT:   (call $refine-return-no-return)
@@ -54,7 +53,7 @@
  )
 
  ;; We cannot refine the return type if it is already the best it can be.
- ;; CHECK:      (func $refine-return-no-refining (result anyref)
+ ;; CHECK:      (func $refine-return-no-refining (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $any anyref)
  ;; CHECK-NEXT:  (local.set $temp
@@ -80,7 +79,7 @@
  )
 
  ;; Refine the return type based on the value flowing out.
- ;; CHECK:      (func $refine-return-flow (result i31ref)
+ ;; CHECK:      (func $refine-return-flow (type $none_=>_i31ref) (result i31ref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $i31 i31ref)
  ;; CHECK-NEXT:  (local.set $temp
@@ -104,7 +103,7 @@
 
   (local.get $i31)
  )
- ;; CHECK:      (func $call-refine-return-flow (result i31ref)
+ ;; CHECK:      (func $call-refine-return-flow (type $none_=>_i31ref) (result i31ref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local.set $temp
  ;; CHECK-NEXT:   (call $call-refine-return-flow)
@@ -141,7 +140,7 @@
  )
 
  ;; Refine the return type based on a return.
- ;; CHECK:      (func $refine-return-return (result i31ref)
+ ;; CHECK:      (func $refine-return-return (type $none_=>_i31ref) (result i31ref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $i31 i31ref)
  ;; CHECK-NEXT:  (local.set $temp
@@ -171,7 +170,7 @@
  )
 
  ;; Refine the return type based on multiple values.
- ;; CHECK:      (func $refine-return-many (result i31ref)
+ ;; CHECK:      (func $refine-return-many (type $none_=>_i31ref) (result i31ref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $i31 i31ref)
  ;; CHECK-NEXT:  (local.set $temp
@@ -228,10 +227,10 @@
   (local.get $i31)
  )
 
- ;; CHECK:      (func $refine-return-many-lub (result eqref)
+ ;; CHECK:      (func $refine-return-many-lub (type $none_=>_eqref) (result eqref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $i31 i31ref)
- ;; CHECK-NEXT:  (local $data dataref)
+ ;; CHECK-NEXT:  (local $struct structref)
  ;; CHECK-NEXT:  (local.set $temp
  ;; CHECK-NEXT:   (call $refine-return-many-lub)
  ;; CHECK-NEXT:  )
@@ -244,7 +243,7 @@
  ;; CHECK-NEXT:  (if
  ;; CHECK-NEXT:   (i32.const 2)
  ;; CHECK-NEXT:   (return
- ;; CHECK-NEXT:    (local.get $data)
+ ;; CHECK-NEXT:    (local.get $struct)
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (local.get $i31)
@@ -252,7 +251,7 @@
  ;; NOMNL:      (func $refine-return-many-lub (type $none_=>_eqref) (result eqref)
  ;; NOMNL-NEXT:  (local $temp anyref)
  ;; NOMNL-NEXT:  (local $i31 i31ref)
- ;; NOMNL-NEXT:  (local $data dataref)
+ ;; NOMNL-NEXT:  (local $struct structref)
  ;; NOMNL-NEXT:  (local.set $temp
  ;; NOMNL-NEXT:   (call $refine-return-many-lub)
  ;; NOMNL-NEXT:  )
@@ -265,7 +264,7 @@
  ;; NOMNL-NEXT:  (if
  ;; NOMNL-NEXT:   (i32.const 2)
  ;; NOMNL-NEXT:   (return
- ;; NOMNL-NEXT:    (local.get $data)
+ ;; NOMNL-NEXT:    (local.get $struct)
  ;; NOMNL-NEXT:   )
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT:  (local.get $i31)
@@ -273,7 +272,7 @@
  (func $refine-return-many-lub (result anyref)
   (local $temp anyref)
   (local $i31 (ref null i31))
-  (local $data (ref null data))
+  (local $struct (ref null struct))
 
   (local.set $temp (call $refine-return-many-lub))
 
@@ -283,16 +282,16 @@
   )
   (if
    (i32.const 2)
-   ;; The refined return type has to be a supertype of data.
-   (return (local.get $data))
+   ;; The refined return type has to be a supertype of struct.
+   (return (local.get $struct))
   )
   (local.get $i31)
  )
 
- ;; CHECK:      (func $refine-return-many-lub-2 (result eqref)
+ ;; CHECK:      (func $refine-return-many-lub-2 (type $none_=>_eqref) (result eqref)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $i31 i31ref)
- ;; CHECK-NEXT:  (local $data dataref)
+ ;; CHECK-NEXT:  (local $struct structref)
  ;; CHECK-NEXT:  (local.set $temp
  ;; CHECK-NEXT:   (call $refine-return-many-lub-2)
  ;; CHECK-NEXT:  )
@@ -308,12 +307,12 @@
  ;; CHECK-NEXT:    (local.get $i31)
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
- ;; CHECK-NEXT:  (local.get $data)
+ ;; CHECK-NEXT:  (local.get $struct)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $refine-return-many-lub-2 (type $none_=>_eqref) (result eqref)
  ;; NOMNL-NEXT:  (local $temp anyref)
  ;; NOMNL-NEXT:  (local $i31 i31ref)
- ;; NOMNL-NEXT:  (local $data dataref)
+ ;; NOMNL-NEXT:  (local $struct structref)
  ;; NOMNL-NEXT:  (local.set $temp
  ;; NOMNL-NEXT:   (call $refine-return-many-lub-2)
  ;; NOMNL-NEXT:  )
@@ -329,12 +328,12 @@
  ;; NOMNL-NEXT:    (local.get $i31)
  ;; NOMNL-NEXT:   )
  ;; NOMNL-NEXT:  )
- ;; NOMNL-NEXT:  (local.get $data)
+ ;; NOMNL-NEXT:  (local.get $struct)
  ;; NOMNL-NEXT: )
  (func $refine-return-many-lub-2 (result anyref)
   (local $temp anyref)
   (local $i31 (ref null i31))
-  (local $data (ref null data))
+  (local $struct (ref null struct))
 
   (local.set $temp (call $refine-return-many-lub-2))
 
@@ -346,12 +345,12 @@
    (i32.const 2)
    (return (local.get $i31))
   )
-  ;; The refined return type has to be a supertype of data.
-  (local.get $data)
+  ;; The refined return type has to be a supertype of struct.
+  (local.get $struct)
  )
 
  ;; We can refine the return types of tuples.
- ;; CHECK:      (func $refine-return-tuple (result i31ref i32)
+ ;; CHECK:      (func $refine-return-tuple (type $none_=>_i31ref_i32) (result i31ref i32)
  ;; CHECK-NEXT:  (local $temp anyref)
  ;; CHECK-NEXT:  (local $i31 i31ref)
  ;; CHECK-NEXT:  (local.set $temp
@@ -397,7 +396,7 @@
  ;; returns a ref.func of this one. They both begin by returning a funcref;
  ;; after refining the return type of the second function, it will have a more
  ;; specific type (which is ok as subtyping is allowed with tail calls).
- ;; CHECK:      (func $do-return-call (result funcref)
+ ;; CHECK:      (func $do-return-call (type $none_=>_funcref) (result funcref)
  ;; CHECK-NEXT:  (return_call $return-ref-func)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $do-return-call (type $none_=>_funcref) (result funcref)
@@ -406,7 +405,7 @@
  (func $do-return-call (result funcref)
   (return_call $return-ref-func)
  )
- ;; CHECK:      (func $return-ref-func (result (ref $none_=>_funcref))
+ ;; CHECK:      (func $return-ref-func (type $none_=>_ref|none_->_funcref|) (result (ref $none_=>_funcref))
  ;; CHECK-NEXT:  (ref.func $do-return-call)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $return-ref-func (type $none_=>_ref|none_->_funcref|) (result (ref $none_=>_funcref))
@@ -418,7 +417,7 @@
 
  ;; Show that we can optimize the return type of a function that does a tail
  ;; call.
- ;; CHECK:      (func $tail-callee (result (ref ${}))
+ ;; CHECK:      (func $tail-callee (type $return_{}) (result (ref ${}))
  ;; CHECK-NEXT:  (unreachable)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $tail-callee (type $return_{}) (result (ref ${}))
@@ -427,7 +426,7 @@
  (func $tail-callee (result (ref ${}))
   (unreachable)
  )
- ;; CHECK:      (func $tail-caller-yes (result (ref ${}))
+ ;; CHECK:      (func $tail-caller-yes (type $return_{}) (result (ref ${}))
  ;; CHECK-NEXT:  (return_call $tail-callee)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $tail-caller-yes (type $return_{}) (result (ref ${}))
@@ -438,7 +437,7 @@
   ;; target's return type is more specific than anyref.
   (return_call $tail-callee)
  )
- ;; CHECK:      (func $tail-caller-no (result anyref)
+ ;; CHECK:      (func $tail-caller-no (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (local $any anyref)
  ;; CHECK-NEXT:  (if
  ;; CHECK-NEXT:   (i32.const 1)
@@ -468,7 +467,7 @@
   )
   (return_call $tail-callee)
  )
- ;; CHECK:      (func $tail-call-caller
+ ;; CHECK:      (func $tail-call-caller (type $none_=>_none)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $tail-caller-yes)
  ;; CHECK-NEXT:  )
@@ -495,7 +494,7 @@
  )
 
  ;; As above, but with an indirect tail call.
- ;; CHECK:      (func $tail-callee-indirect (result (ref ${}))
+ ;; CHECK:      (func $tail-callee-indirect (type $return_{}) (result (ref ${}))
  ;; CHECK-NEXT:  (unreachable)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $tail-callee-indirect (type $return_{}) (result (ref ${}))
@@ -504,7 +503,7 @@
  (func $tail-callee-indirect (result (ref ${}))
   (unreachable)
  )
- ;; CHECK:      (func $tail-caller-indirect-yes (result (ref ${}))
+ ;; CHECK:      (func $tail-caller-indirect-yes (type $return_{}) (result (ref ${}))
  ;; CHECK-NEXT:  (return_call_indirect $0 (type $return_{})
  ;; CHECK-NEXT:   (i32.const 0)
  ;; CHECK-NEXT:  )
@@ -517,7 +516,7 @@
  (func $tail-caller-indirect-yes (result anyref)
   (return_call_indirect (type $return_{}) (i32.const 0))
  )
- ;; CHECK:      (func $tail-caller-indirect-no (result anyref)
+ ;; CHECK:      (func $tail-caller-indirect-no (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (local $any anyref)
  ;; CHECK-NEXT:  (if
  ;; CHECK-NEXT:   (i32.const 1)
@@ -549,7 +548,7 @@
   )
   (return_call_indirect (type $return_{}) (i32.const 0))
  )
- ;; CHECK:      (func $tail-call-caller-indirect
+ ;; CHECK:      (func $tail-call-caller-indirect (type $none_=>_none)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $tail-caller-indirect-yes)
  ;; CHECK-NEXT:  )
@@ -575,7 +574,7 @@
  )
 
  ;; As above, but with a tail call by function reference.
- ;; CHECK:      (func $tail-callee-call_ref (result (ref ${}))
+ ;; CHECK:      (func $tail-callee-call_ref (type $return_{}) (result (ref ${}))
  ;; CHECK-NEXT:  (unreachable)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $tail-callee-call_ref (type $return_{}) (result (ref ${}))
@@ -584,7 +583,7 @@
  (func $tail-callee-call_ref (result (ref ${}))
   (unreachable)
  )
- ;; CHECK:      (func $tail-caller-call_ref-yes (result (ref ${}))
+ ;; CHECK:      (func $tail-caller-call_ref-yes (type $return_{}) (result (ref ${}))
  ;; CHECK-NEXT:  (local $return_{} (ref null $return_{}))
  ;; CHECK-NEXT:  (return_call_ref $return_{}
  ;; CHECK-NEXT:   (local.get $return_{})
@@ -601,7 +600,7 @@
 
   (return_call_ref $return_{} (local.get $return_{}))
  )
- ;; CHECK:      (func $tail-caller-call_ref-no (result anyref)
+ ;; CHECK:      (func $tail-caller-call_ref-no (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (local $any anyref)
  ;; CHECK-NEXT:  (local $return_{} (ref null $return_{}))
  ;; CHECK-NEXT:  (if
@@ -636,11 +635,12 @@
   )
   (return_call_ref $return_{} (local.get $return_{}))
  )
- ;; CHECK:      (func $tail-caller-call_ref-unreachable (result anyref)
+ ;; CHECK:      (func $tail-caller-call_ref-unreachable (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (block ;; (replaces something unreachable we can't emit)
  ;; CHECK-NEXT:   (drop
  ;; CHECK-NEXT:    (unreachable)
  ;; CHECK-NEXT:   )
+ ;; CHECK-NEXT:   (unreachable)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $tail-caller-call_ref-unreachable (type $none_=>_anyref) (result anyref)
@@ -648,6 +648,7 @@
  ;; NOMNL-NEXT:   (drop
  ;; NOMNL-NEXT:    (unreachable)
  ;; NOMNL-NEXT:   )
+ ;; NOMNL-NEXT:   (unreachable)
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT: )
  (func $tail-caller-call_ref-unreachable (result anyref)
@@ -655,7 +656,7 @@
   ;; should not hit an assertion on such things.
   (return_call_ref $return_{} (unreachable))
  )
- ;; CHECK:      (func $tail-call-caller-call_ref
+ ;; CHECK:      (func $tail-call-caller-call_ref (type $none_=>_none)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $tail-caller-call_ref-yes)
  ;; CHECK-NEXT:  )
@@ -689,7 +690,7 @@
   )
  )
 
- ;; CHECK:      (func $update-null (param $x i32) (param $y i32) (result (ref null ${i32}))
+ ;; CHECK:      (func $update-null (type $i32_i32_=>_ref?|${i32}|) (param $x i32) (param $y i32) (result (ref null ${i32}))
  ;; CHECK-NEXT:  (if
  ;; CHECK-NEXT:   (local.get $x)
  ;; CHECK-NEXT:   (if
@@ -698,7 +699,7 @@
  ;; CHECK-NEXT:     (struct.new_default ${i32_f32})
  ;; CHECK-NEXT:    )
  ;; CHECK-NEXT:    (return
- ;; CHECK-NEXT:     (ref.null ${i32})
+ ;; CHECK-NEXT:     (ref.null none)
  ;; CHECK-NEXT:    )
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:   (return
@@ -715,7 +716,7 @@
  ;; NOMNL-NEXT:     (struct.new_default ${i32_f32})
  ;; NOMNL-NEXT:    )
  ;; NOMNL-NEXT:    (return
- ;; NOMNL-NEXT:     (ref.null ${i32})
+ ;; NOMNL-NEXT:     (ref.null none)
  ;; NOMNL-NEXT:    )
  ;; NOMNL-NEXT:   )
  ;; NOMNL-NEXT:   (return
@@ -737,7 +738,7 @@
   )
  )
 
- ;; CHECK:      (func $call-update-null (result anyref)
+ ;; CHECK:      (func $call-update-null (type $none_=>_anyref) (result anyref)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $update-null
  ;; CHECK-NEXT:    (i32.const 0)

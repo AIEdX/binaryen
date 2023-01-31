@@ -83,6 +83,10 @@ inline Name getValidElementSegmentName(Module& module, Name root) {
   return getValidName(
     root, [&](Name test) { return !module.getElementSegmentOrNull(test); });
 }
+inline Name getValidDataSegmentName(Module& module, Name root) {
+  return getValidName(
+    root, [&](Name test) { return !module.getDataSegmentOrNull(test); });
+}
 inline Name getValidMemoryName(Module& module, Name root) {
   return getValidName(root,
                       [&](Name test) { return !module.getMemoryOrNull(test); });
@@ -90,6 +94,12 @@ inline Name getValidMemoryName(Module& module, Name root) {
 inline Name getValidLocalName(Function& func, Name root) {
   return getValidName(root,
                       [&](Name test) { return !func.hasLocalIndex(test); });
+}
+
+template<typename T>
+inline Name getValidNameGivenExisting(Name root, const T& existingNames) {
+  return getValidName(root,
+                      [&](Name test) { return !existingNames.count(test); });
 }
 
 class MinifiedNameGenerator {

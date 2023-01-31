@@ -30,6 +30,7 @@
 #include <map>
 #include <ostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "literal.h"
@@ -42,12 +43,12 @@
 namespace wasm {
 
 // An index in a wasm module
-typedef uint32_t Index;
+using Index = uint32_t;
 
 // An address in linear memory.
 struct Address {
-  typedef uint32_t address32_t;
-  typedef uint64_t address64_t;
+  using address32_t = uint32_t;
+  using address64_t = uint64_t;
   address64_t addr;
   constexpr Address() : addr(0) {}
   constexpr Address(uint64_t a) : addr(a) {}
@@ -556,20 +557,15 @@ enum SIMDTernaryOp {
   DotI8x16I7x16AddSToVecI32x4,
 };
 
-enum RefIsOp {
-  RefIsNull,
-  RefIsFunc,
-  RefIsData,
-  RefIsI31,
-};
-
 enum RefAsOp {
   RefAsNonNull,
-  RefAsFunc,
-  RefAsData,
-  RefAsI31,
   ExternInternalize,
   ExternExternalize,
+};
+
+enum ArrayNewSegOp {
+  NewData,
+  NewElem,
 };
 
 enum BrOnOp {
@@ -577,12 +573,6 @@ enum BrOnOp {
   BrOnNonNull,
   BrOnCast,
   BrOnCastFail,
-  BrOnFunc,
-  BrOnNonFunc,
-  BrOnData,
-  BrOnNonData,
-  BrOnI31,
-  BrOnNonI31,
 };
 
 enum StringNewOp {
@@ -596,6 +586,8 @@ enum StringNewOp {
   StringNewWTF8Array,
   StringNewReplaceArray,
   StringNewWTF16Array,
+  // Other
+  StringNewFromCodePoint,
 };
 
 enum StringMeasureOp {
@@ -613,6 +605,11 @@ enum StringEncodeOp {
   StringEncodeUTF8Array,
   StringEncodeWTF8Array,
   StringEncodeWTF16Array,
+};
+
+enum StringEqOp {
+  StringEqEqual,
+  StringEqCompare,
 };
 
 enum StringAsOp {
@@ -696,7 +693,7 @@ public:
     MemoryFillId,
     PopId,
     RefNullId,
-    RefIsId,
+    RefIsNullId,
     RefFuncId,
     RefEqId,
     TableGetId,
@@ -718,6 +715,7 @@ public:
     StructGetId,
     StructSetId,
     ArrayNewId,
+    ArrayNewSegId,
     ArrayInitId,
     ArrayGetId,
     ArraySetId,
@@ -798,7 +796,7 @@ const char* getExpressionName(Expression* curr);
 Literal getLiteralFromConstExpression(Expression* curr);
 Literals getLiteralsFromConstExpression(Expression* curr);
 
-typedef ArenaVector<Expression*> ExpressionList;
+using ExpressionList = ArenaVector<Expression*>;
 
 template<Expression::Id SID> class SpecificExpression : public Expression {
 public:
@@ -1345,12 +1343,9 @@ public:
   void finalize(Type type);
 };
 
-class RefIs : public SpecificExpression<Expression::RefIsId> {
+class RefIsNull : public SpecificExpression<Expression::RefIsNullId> {
 public:
-  RefIs(MixedArena& allocator) {}
-
-  // RefIs can represent ref.is_null, ref.is_func, ref.is_data, and ref.is_i31.
-  RefIsOp op;
+  RefIsNull(MixedArena& allocator) {}
 
   Expression* value;
 
@@ -1515,9 +1510,11 @@ public:
 
   Expression* ref;
 
-  HeapType intendedType;
+  Type castType;
 
   void finalize();
+
+  Type getCastType() { return castType; }
 };
 
 class RefCast : public SpecificExpression<Expression::RefCastId> {
@@ -1526,14 +1523,14 @@ public:
 
   Expression* ref;
 
-  HeapType intendedType;
-
   // Support the unsafe `ref.cast_nop_static` to enable precise cast overhead
   // measurements.
   enum Safety { Safe, Unsafe };
   Safety safety = Safe;
 
   void finalize();
+
+  Type getCastType() { return type; }
 };
 
 class BrOn : public SpecificExpression<Expression::BrOnId> {
@@ -1543,10 +1540,11 @@ public:
   BrOnOp op;
   Name name;
   Expression* ref;
-
-  HeapType intendedType;
+  Type castType;
 
   void finalize();
+
+  Type getCastType() { return castType; }
 
   // Returns the type sent on the branch, if it is taken.
   Type getSentType();
@@ -1600,6 +1598,18 @@ public:
   Expression* size;
 
   bool isWithDefault() { return !init; }
+
+  void finalize();
+};
+
+class ArrayNewSeg : public SpecificExpression<Expression::ArrayNewSegId> {
+public:
+  ArrayNewSeg(MixedArena& allocator) {}
+
+  ArrayNewSegOp op;
+  Index segment;
+  Expression* offset;
+  Expression* size;
 
   void finalize();
 };
@@ -1676,7 +1686,7 @@ public:
   StringNewOp op;
 
   // In linear memory variations this is the pointer in linear memory. In the
-  // GC variations this is an Array.
+  // GC variations this is an Array. In from_codepoint this is the code point.
   Expression* ptr;
 
   // Used only in linear memory variations.
@@ -1685,6 +1695,10 @@ public:
   // Used only in GC variations.
   Expression* start = nullptr;
   Expression* end = nullptr;
+
+  // The "try" variants will return null if an encoding error happens, rather
+  // than trap.
+  bool try_ = false;
 
   void finalize();
 };
@@ -1744,6 +1758,8 @@ public:
 class StringEq : public SpecificExpression<Expression::StringEqId> {
 public:
   StringEq(MixedArena& allocator) {}
+
+  StringEqOp op;
 
   Expression* left;
   Expression* right;
@@ -2016,7 +2032,7 @@ public:
 class ElementSegment : public Named {
 public:
   Name table;
-  Expression* offset;
+  Expression* offset = nullptr;
   Type type = Type(HeapType::func, Nullable);
   std::vector<Expression*> data;
 
@@ -2068,6 +2084,8 @@ public:
   // In wasm32, the maximum memory size is limited by a 32-bit pointer: 4GB
   static const Address::address32_t kMaxSize32 =
     (uint64_t(4) * 1024 * 1024 * 1024) / kPageSize;
+  // in wasm64, the maximum number of pages
+  static const Address::address64_t kMaxSize64 = 1ull << (64 - 16);
 
   Address initial = 0; // sizes are in pages
   Address max = kMaxSize32;
@@ -2100,7 +2118,7 @@ public:
 
 // "Opaque" data, not part of the core wasm spec, that is held in binaries.
 // May be parsed/handled by utility code elsewhere, but not in wasm.h
-class UserSection {
+class CustomSection {
 public:
   std::string name;
   std::vector<char> data;
@@ -2130,7 +2148,7 @@ public:
 
   Name start;
 
-  std::vector<UserSection> userSections;
+  std::vector<CustomSection> customSections;
 
   // Optional user section IR representation.
   std::unique_ptr<DylinkSection> dylinkSection;

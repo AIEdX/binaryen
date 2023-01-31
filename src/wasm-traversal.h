@@ -74,7 +74,7 @@ template<typename SubType, typename ReturnType = void> struct Visitor {
 // A visitor which must be overridden for each visitor that is reached.
 
 template<typename SubType, typename ReturnType = void>
-struct OverriddenVisitor {
+struct OverriddenVisitor : public Visitor<SubType, ReturnType> {
 // Expression visitors, which must be overridden
 #define DELEGATE(CLASS_TO_VISIT)                                               \
   ReturnType visit##CLASS_TO_VISIT(CLASS_TO_VISIT* curr) {                     \
@@ -86,22 +86,6 @@ struct OverriddenVisitor {
   }
 
 #include "wasm-delegations.def"
-
-  ReturnType visit(Expression* curr) {
-    assert(curr);
-
-    switch (curr->_id) {
-#define DELEGATE(CLASS_TO_VISIT)                                               \
-  case Expression::Id::CLASS_TO_VISIT##Id:                                     \
-    return static_cast<SubType*>(this)->visit##CLASS_TO_VISIT(                 \
-      static_cast<CLASS_TO_VISIT*>(curr))
-
-#include "wasm-delegations.def"
-
-      default:
-        WASM_UNREACHABLE("unexpected expression type");
-    }
-  }
 };
 
 // Visit with a single unified visitor, called on every node, instead of
@@ -284,6 +268,11 @@ struct Walker : public VisitorType {
         self->walk(item);
       }
     }
+    for (auto& curr : module->dataSegments) {
+      if (curr->offset) {
+        self->walk(curr->offset);
+      }
+    }
     setModule(nullptr);
   }
 
@@ -291,7 +280,7 @@ struct Walker : public VisitorType {
   // nested.
 
   // Tasks receive the this pointer and a pointer to the pointer to operate on
-  typedef void (*TaskFunc)(SubType*, Expression**);
+  using TaskFunc = void (*)(SubType*, Expression**);
 
   struct Task {
     TaskFunc func;
@@ -363,8 +352,7 @@ struct PostWalker : public Walker<SubType, VisitorType> {
 
 #define DELEGATE_START(id)                                                     \
   self->pushTask(SubType::doVisit##id, currp);                                 \
-  auto* cast = curr->cast<id>();                                               \
-  WASM_UNUSED(cast);
+  [[maybe_unused]] auto* cast = curr->cast<id>();
 
 #define DELEGATE_GET_FIELD(id, field) cast->field
 
@@ -392,7 +380,7 @@ struct PostWalker : public Walker<SubType, VisitorType> {
 
 // Stacks of expressions tend to be limited in size (although, sometimes
 // super-nested blocks exist for br_table).
-typedef SmallVector<Expression*, 10> ExpressionStack;
+using ExpressionStack = SmallVector<Expression*, 10>;
 
 // Traversal with a control-flow stack.
 

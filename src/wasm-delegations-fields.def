@@ -491,11 +491,10 @@ switch (DELEGATE_ID) {
     DELEGATE_END(RefNull);
     break;
   }
-  case Expression::Id::RefIsId: {
-    DELEGATE_START(RefIs);
-    DELEGATE_FIELD_INT(RefIs, op);
-    DELEGATE_FIELD_CHILD(RefIs, value);
-    DELEGATE_END(RefIs);
+  case Expression::Id::RefIsNullId: {
+    DELEGATE_START(RefIsNull);
+    DELEGATE_FIELD_CHILD(RefIsNull, value);
+    DELEGATE_END(RefIsNull);
     break;
   }
   case Expression::Id::RefFuncId: {
@@ -614,14 +613,13 @@ switch (DELEGATE_ID) {
   }
   case Expression::Id::RefTestId: {
     DELEGATE_START(RefTest);
-    DELEGATE_FIELD_HEAPTYPE(RefTest, intendedType);
+    DELEGATE_FIELD_TYPE(RefTest, castType);
     DELEGATE_FIELD_CHILD(RefTest, ref);
     DELEGATE_END(RefTest);
     break;
   }
   case Expression::Id::RefCastId: {
     DELEGATE_START(RefCast);
-    DELEGATE_FIELD_HEAPTYPE(RefCast, intendedType);
     DELEGATE_FIELD_CHILD(RefCast, ref);
     DELEGATE_END(RefCast);
     break;
@@ -630,7 +628,7 @@ switch (DELEGATE_ID) {
     DELEGATE_START(BrOn);
     DELEGATE_FIELD_INT(BrOn, op);
     DELEGATE_FIELD_SCOPE_NAME_USE(BrOn, name);
-    DELEGATE_FIELD_HEAPTYPE(BrOn, intendedType);
+    DELEGATE_FIELD_TYPE(BrOn, castType);
     DELEGATE_FIELD_CHILD(BrOn, ref);
     DELEGATE_END(BrOn);
     break;
@@ -662,6 +660,15 @@ switch (DELEGATE_ID) {
     DELEGATE_FIELD_CHILD(ArrayNew, size);
     DELEGATE_FIELD_OPTIONAL_CHILD(ArrayNew, init);
     DELEGATE_END(ArrayNew);
+    break;
+  }
+  case Expression::Id::ArrayNewSegId: {
+    DELEGATE_START(ArrayNewSeg);
+    DELEGATE_FIELD_INT(ArrayNewSeg, op);
+    DELEGATE_FIELD_INT(ArrayNewSeg, segment);
+    DELEGATE_FIELD_CHILD(ArrayNewSeg, size);
+    DELEGATE_FIELD_CHILD(ArrayNewSeg, offset);
+    DELEGATE_END(ArrayNewSeg);
     break;
   }
   case Expression::Id::ArrayInitId: {
@@ -712,6 +719,7 @@ switch (DELEGATE_ID) {
   case Expression::Id::StringNewId: {
     DELEGATE_START(StringNew);
     DELEGATE_FIELD_INT(StringNew, op);
+    DELEGATE_FIELD_INT(StringNew, try_);
     DELEGATE_FIELD_OPTIONAL_CHILD(StringNew, end);
     DELEGATE_FIELD_OPTIONAL_CHILD(StringNew, start);
     DELEGATE_FIELD_OPTIONAL_CHILD(StringNew, length);
@@ -750,6 +758,7 @@ switch (DELEGATE_ID) {
   }
   case Expression::Id::StringEqId: {
     DELEGATE_START(StringEq);
+    DELEGATE_FIELD_INT(StringEq, op);
     DELEGATE_FIELD_CHILD(StringEq, right);
     DELEGATE_FIELD_CHILD(StringEq, left);
     DELEGATE_END(StringEq);

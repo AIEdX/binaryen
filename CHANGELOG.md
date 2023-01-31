@@ -15,13 +15,43 @@ full changeset diff at the end of each section.
 Current Trunk
 -------------
 
-- Add extra `memory64` argument for `BinaryenSetMemory` and new `BinaryenMemoryIs64` C-API method to determine 64-bit memory. (#4963)
+- Optimization sequences like `-O3 -Os` now do the expected thing and run `-O3`
+  followed by `-Os`. Previously the last of them set the defaults that were used
+  by all executions, so `-O3 -Os` was equivalent to `-Os -Os`. (There is no
+  change to the default optimization level that other passes can see. For
+  example, `--precompute-propagate -O2 -O1` will run `--precompute-propagate`
+  at opt level `1`, as the global default is set to `2` and then overridden to
+  `1`. The only change is that the passes run by `-O2` will actually run `-O2`
+  now, while before they'd use the global default which made them do `-O1`.)
+- Add `--closed-world` flag. This enables more optimizations in GC mode as it
+  lets us assume that we can change types inside the module.
+- The isorecursive WasmGC type system (i.e. --hybrid) is now the default to
+  match the spec and the old default equirecursive (i.e. --structural) system
+  has been removed.
+- `ref.is_func`, `ref.is_data`, and `ref.is_i31` have been removed from the C
+  and JS APIs and `RefIs` has been replaced with `RefIsNull`.
+- Types `Data` and `Dataref` have been replaced with types `Struct` and
+  `Structref` in the C and JS APIs.
+
+v111
+----
+
+- Add extra `memory64` argument for `BinaryenSetMemory` and new
+  `BinaryenMemoryIs64` C-API method to determine 64-bit memory. (#4963)
 - `TypeBuilderSetSubType` now takes a supertype as the second argument.
-- `call_ref` can now take a signature type immediate in the text format. The
-  type immediate will become mandatory in the future.
+- `call_ref` now takes a mandatory signature type immediate.
 - If `THROW_ON_FATAL` is defined at compile-time, then fatal errors will throw a
   `std::runtime_error` instead of terminating the process. This may be used by
   embedders of Binaryen to recover from errors.
+- Implemented bottom heap types: `none`, `nofunc`, and `noextern`. RefNull
+  expressions and null `Literal`s must now have type `nullref`, `nullfuncref`,
+  or `nullexternref`.
+- The C-API's `BinaryenTypeI31ref` and `BinaryenTypeDataref` now return nullable
+  types.
+- The `sign-extension` and `mutable-globals` features are now both enabled by
+  default in all tools. This is in order to match llvm's defaults (See
+  https://reviews.llvm.org/D125728).
+- Add a pass to lower sign-extension operations to MVP.
 
 v110
 ----

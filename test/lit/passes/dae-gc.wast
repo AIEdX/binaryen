@@ -4,10 +4,10 @@
 
 (module
  ;; CHECK:      (type ${} (struct ))
- ;; NOMNL:      (type ${} (struct_subtype  data))
+ ;; NOMNL:      (type ${} (struct ))
  (type ${} (struct))
 
- ;; CHECK:      (func $foo
+ ;; CHECK:      (func $foo (type $none_=>_none)
  ;; CHECK-NEXT:  (call $bar)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $foo (type $none_=>_none)
@@ -20,7 +20,7 @@
    )
   )
  )
- ;; CHECK:      (func $bar
+ ;; CHECK:      (func $bar (type $none_=>_none)
  ;; CHECK-NEXT:  (local $0 i31ref)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (local.tee $0
@@ -67,7 +67,7 @@
  )
  ;; A function that gets a non-nullable reference that is never used. We can
  ;; still create a non-nullable local for that parameter.
- ;; CHECK:      (func $get-nonnull
+ ;; CHECK:      (func $get-nonnull (type $none_=>_none)
  ;; CHECK-NEXT:  (local $0 (ref ${}))
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
@@ -78,7 +78,7 @@
  (func $get-nonnull (param $0 (ref ${}))
   (nop)
  )
- ;; CHECK:      (func $send-nonnull
+ ;; CHECK:      (func $send-nonnull (type $none_=>_none)
  ;; CHECK-NEXT:  (call $get-nonnull)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $send-nonnull (type $none_=>_none)
@@ -93,7 +93,7 @@
 
 ;; Test ref.func and ref.null optimization of constant parameter values.
 (module
- ;; CHECK:      (func $foo (param $0 (ref $none_=>_none))
+ ;; CHECK:      (func $foo (type $ref|none_->_none|_=>_none) (param $0 (ref $none_=>_none))
  ;; CHECK-NEXT:  (local $1 (ref $none_=>_none))
  ;; CHECK-NEXT:  (local.set $1
  ;; CHECK-NEXT:   (ref.func $a)
@@ -127,7 +127,7 @@
   (drop (local.get $y))
  )
 
- ;; CHECK:      (func $call-foo
+ ;; CHECK:      (func $call-foo (type $none_=>_none)
  ;; CHECK-NEXT:  (call $foo
  ;; CHECK-NEXT:   (ref.func $b)
  ;; CHECK-NEXT:  )
@@ -156,10 +156,10 @@
   )
  )
 
- ;; CHECK:      (func $bar (param $0 i31ref)
- ;; CHECK-NEXT:  (local $1 anyref)
+ ;; CHECK:      (func $bar (type $i31ref_=>_none) (param $0 i31ref)
+ ;; CHECK-NEXT:  (local $1 nullref)
  ;; CHECK-NEXT:  (local.set $1
- ;; CHECK-NEXT:   (ref.null any)
+ ;; CHECK-NEXT:   (ref.null none)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (block
  ;; CHECK-NEXT:   (drop
@@ -171,9 +171,9 @@
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $bar (type $i31ref_=>_none) (param $0 i31ref)
- ;; NOMNL-NEXT:  (local $1 anyref)
+ ;; NOMNL-NEXT:  (local $1 nullref)
  ;; NOMNL-NEXT:  (local.set $1
- ;; NOMNL-NEXT:   (ref.null any)
+ ;; NOMNL-NEXT:   (ref.null none)
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT:  (block
  ;; NOMNL-NEXT:   (drop
@@ -190,9 +190,9 @@
   (drop (local.get $y))
  )
 
- ;; CHECK:      (func $call-bar
+ ;; CHECK:      (func $call-bar (type $none_=>_none)
  ;; CHECK-NEXT:  (call $bar
- ;; CHECK-NEXT:   (ref.null i31)
+ ;; CHECK-NEXT:   (ref.null none)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (call $bar
  ;; CHECK-NEXT:   (i31.new
@@ -202,7 +202,7 @@
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $call-bar (type $none_=>_none)
  ;; NOMNL-NEXT:  (call $bar
- ;; NOMNL-NEXT:   (ref.null i31)
+ ;; NOMNL-NEXT:   (ref.null none)
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT:  (call $bar
  ;; NOMNL-NEXT:   (i31.new
@@ -211,35 +211,35 @@
  ;; NOMNL-NEXT:  )
  ;; NOMNL-NEXT: )
  (func $call-bar
-  ;; Call with nulls. Mixing nulls is fine as they all have the same value, and
-  ;; we can optimize (to the LUB of the nulls). However, mixing a null with a
-  ;; reference stops us in the second param.
+  ;; Call with nulls. Mixing nulls is fine as they all have the same type and
+  ;; value. However, mixing a null with a reference stops us in the second
+  ;; param.
   (call $bar
-   (ref.null i31)
-   (ref.null data)
+   (ref.null none)
+   (ref.null none)
   )
   (call $bar
-   (ref.null any)
+   (ref.null none)
    (i31.new (i32.const 0))
   )
  )
 
  ;; Helper functions so we have something to take the reference of.
- ;; CHECK:      (func $a
+ ;; CHECK:      (func $a (type $none_=>_none)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $a (type $none_=>_none)
  ;; NOMNL-NEXT:  (nop)
  ;; NOMNL-NEXT: )
  (func $a)
- ;; CHECK:      (func $b
+ ;; CHECK:      (func $b (type $none_=>_none)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $b (type $none_=>_none)
  ;; NOMNL-NEXT:  (nop)
  ;; NOMNL-NEXT: )
  (func $b)
- ;; CHECK:      (func $c
+ ;; CHECK:      (func $c (type $none_=>_none)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
  ;; NOMNL:      (func $c (type $none_=>_none)

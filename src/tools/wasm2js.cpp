@@ -788,13 +788,6 @@ void AssertionEmitter::fixCalls(Ref asmjs, Name asmModule) {
 }
 
 void AssertionEmitter::emit() {
-  // TODO: nan and infinity shouldn't be needed once literal asm.js code isn't
-  // generated
-  out << R"(
-    var nan = NaN;
-    var infinity = Infinity;
-  )";
-
   // When equating floating point values in spec tests we want to use bitwise
   // equality like wasm does. Unfortunately though NaN makes this tricky. JS
   // implementations like Spidermonkey and JSC will canonicalize NaN loads from
@@ -834,7 +827,7 @@ void AssertionEmitter::emit() {
   )";
 
   Builder wasmBuilder(sexpBuilder.getModule());
-  Name asmModule = std::string("ret") + ASM_FUNC.str;
+  Name asmModule = std::string("ret") + ASM_FUNC.toString();
   // Track the last built module.
   Module wasm;
   for (size_t i = 0; i < root.size(); ++i) {
@@ -843,11 +836,11 @@ void AssertionEmitter::emit() {
         e[0]->str() == Name("module")) {
       ModuleUtils::clearModule(wasm);
       std::stringstream funcNameS;
-      funcNameS << ASM_FUNC.c_str() << i;
+      funcNameS << ASM_FUNC << i;
       std::stringstream moduleNameS;
-      moduleNameS << "ret" << ASM_FUNC.c_str() << i;
-      Name funcName(funcNameS.str().c_str());
-      asmModule = Name(moduleNameS.str().c_str());
+      moduleNameS << "ret" << ASM_FUNC << i;
+      Name funcName(funcNameS.str());
+      asmModule = Name(moduleNameS.str());
       options.applyFeatures(wasm);
       SExpressionWasmBuilder builder(wasm, e, options.profile);
       emitWasm(wasm, out, flags, options.passOptions, funcName);
@@ -857,13 +850,13 @@ void AssertionEmitter::emit() {
       std::cerr << "skipping " << e << std::endl;
       continue;
     }
-    Name testFuncName(IString(("check" + std::to_string(i)).c_str(), false));
+    Name testFuncName("check" + std::to_string(i));
     bool isInvoke = (e[0]->str() == Name("invoke"));
     bool isReturn = (e[0]->str() == Name("assert_return"));
     bool isReturnNan = (e[0]->str() == Name("assert_return_nan"));
     if (isInvoke) {
       emitInvokeFunc(wasmBuilder, wasm, e, testFuncName, asmModule);
-      out << testFuncName.str << "();\n";
+      out << testFuncName << "();\n";
       continue;
     }
     // Otherwise, this is some form of assertion.
@@ -875,7 +868,7 @@ void AssertionEmitter::emit() {
       emitAssertTrapFunc(wasmBuilder, wasm, e, testFuncName, asmModule);
     }
 
-    out << "if (!" << testFuncName.str << "()) throw 'assertion failed: " << e
+    out << "if (!" << testFuncName << "()) throw 'assertion failed: " << e
         << "';\n";
   }
 }

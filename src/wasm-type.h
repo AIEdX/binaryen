@@ -21,6 +21,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -40,9 +41,8 @@
 namespace wasm {
 
 enum class TypeSystem {
-  Equirecursive,
-  Nominal,
   Isorecursive,
+  Nominal,
 };
 
 // This should only ever be called before any Types or HeapTypes have been
@@ -144,7 +144,7 @@ public:
   // │ anyref      ║ x │   │ x │ x │ f? n  │ │  f_unc
   // │ eqref       ║ x │   │ x │ x │    n  │ │  n_ullable
   // │ i31ref      ║ x │   │ x │ x │    n  │ │
-  // │ dataref     ║ x │   │ x │ x │    n  │ │
+  // │ structref   ║ x │   │ x │ x │    n  │ │
   // ├─ Compound ──╫───┼───┼───┼───┤───────┤ │
   // │ Ref         ║   │ x │ x │ x │ f? n? │◄┘
   // │ Tuple       ║   │ x │   │ x │       │
@@ -169,6 +169,8 @@ public:
   // is irrelevant. (For that reason, this is only the negation of isNullable()
   // on references, but both return false on non-references.)
   bool isNonNullable() const;
+  // Whether this type is only inhabited by null values.
+  bool isNull() const;
   bool isStruct() const;
   bool isArray() const;
   bool isDefaultable() const;
@@ -321,13 +323,17 @@ public:
     any,
     eq,
     i31,
-    data,
+    struct_,
+    array,
     string,
     stringview_wtf8,
     stringview_wtf16,
     stringview_iter,
+    none,
+    noext,
+    nofunc,
   };
-  static constexpr BasicHeapType _last_basic_type = stringview_iter;
+  static constexpr BasicHeapType _last_basic_type = nofunc;
 
   // BasicHeapType can be implicitly upgraded to HeapType
   constexpr HeapType(BasicHeapType id) : id(id) {}
@@ -358,6 +364,7 @@ public:
   bool isSignature() const;
   bool isStruct() const;
   bool isArray() const;
+  bool isBottom() const;
 
   Signature getSignature() const;
   const Struct& getStruct() const;
@@ -370,6 +377,9 @@ public:
   // Return the depth of this heap type in the nominal type hierarchy, i.e. the
   // number of supertypes in its supertype chain.
   size_t getDepth() const;
+
+  // Get the bottom heap type for this heap type's hierarchy.
+  BasicHeapType getBottom() const;
 
   // Get the recursion group for this non-basic type.
   RecGroup getRecGroup() const;
@@ -421,6 +431,8 @@ public:
   std::string toString() const;
 };
 
+inline bool Type::isNull() const { return isRef() && getHeapType().isBottom(); }
+
 // A recursion group consisting of one or more HeapTypes. HeapTypes with single
 // members are encoded without using any additional memory, which is why
 // `getHeapTypes` has to return a vector by value; it might have to create one
@@ -447,7 +459,7 @@ public:
   HeapType operator[](size_t i) const { return *Iterator{{this, i}}; }
 };
 
-typedef std::vector<Type> TypeList;
+using TypeList = std::vector<Type>;
 
 // Passed by reference rather than by value because it can own an unbounded
 // amount of data.
@@ -518,7 +530,7 @@ struct Field {
   unsigned getByteSize() const;
 };
 
-typedef std::vector<Field> FieldList;
+using FieldList = std::vector<Field>;
 
 // Passed by reference rather than by value because it can own an unbounded
 // amount of data.
@@ -667,8 +679,7 @@ struct TypeBuilder {
       builder.setHeapType(index, array);
       return *this;
     }
-    Entry& subTypeOf(Entry other) {
-      assert(&builder == &other.builder);
+    Entry& subTypeOf(HeapType other) {
       builder.setSubType(index, other);
       return *this;
     }

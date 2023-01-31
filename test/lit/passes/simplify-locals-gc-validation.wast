@@ -5,7 +5,7 @@
 ;; a local.get until the end of the current block.
 
 (module
-  ;; CHECK:      (func $test-nn (param $x (ref any))
+  ;; CHECK:      (func $test-nn (type $ref|any|_=>_none) (param $x (ref any))
   ;; CHECK-NEXT:  (local $nn anyref)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT:  (block $inner
@@ -13,7 +13,7 @@
   ;; CHECK-NEXT:    (ref.as_non_null
   ;; CHECK-NEXT:     (local.tee $nn
   ;; CHECK-NEXT:      (ref.as_non_null
-  ;; CHECK-NEXT:       (ref.null any)
+  ;; CHECK-NEXT:       (ref.null none)
   ;; CHECK-NEXT:      )
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )

@@ -30,8 +30,8 @@
   (type $words (array (mut i32)))
 
   (type $parent (struct))
-  (type $child (struct i32))
-  (type $grandchild (struct i32 i64))
+  (type $child (struct_subtype i32 $parent))
+  (type $grandchild (struct_subtype i32 i64 $child))
 
   (type $nested-child-struct (struct (field (mut (ref $child)))))
   (type $nested-child-array (array (mut (ref $child))))
@@ -40,7 +40,7 @@
     (struct.new_default $struct.A)
   )
 
-  (func $structs (param $x (ref $struct.A)) (result (ref $struct.B))
+  (func $structs (param $x (ref $struct.A)) (param $struct.A.prime (ref null $struct.A.prime)) (param $grandchild (ref null $grandchild)) (param $struct.C (ref null $struct.C)) (param $nested-child-struct (ref null $nested-child-struct)) (result (ref $struct.B))
     (local $tA (ref null $struct.A))
     (local $tB (ref null $struct.B))
     (local $tc (ref null $struct.C))
@@ -62,7 +62,7 @@
       (struct.get $struct.A $named (local.get $x))
     )
     (drop
-      (struct.get $struct.A.prime $othername (ref.null $struct.A.prime))
+      (struct.get $struct.A.prime $othername (local.get $struct.A.prime))
     )
     (drop
       (struct.get_u $struct.B 0 (local.get $tB))
@@ -72,10 +72,7 @@
     )
     ;; immutable fields allow subtyping.
     (drop
-      (struct.get $child 0 (ref.null $grandchild))
-    )
-    (drop
-      (ref.null $struct.A)
+      (struct.get $child 0 (local.get $grandchild))
     )
     (drop
       (block (result (ref null $struct.A))
@@ -102,14 +99,14 @@
       )
     )
     (struct.set $struct.C 0
-      (ref.null $struct.C)
+      (local.get $struct.C)
       (f32.const 100)
     )
     ;; values may be subtypes
     (struct.set $nested-child-struct 0
-      (ref.null $nested-child-struct)
+      (local.get $nested-child-struct)
       (ref.as_non_null
-       (ref.null $grandchild)
+       (local.get $grandchild)
       )
     )
     (drop
@@ -124,7 +121,7 @@
     )
     (unreachable)
   )
-  (func $arrays (param $x (ref $vector)) (result (ref $matrix))
+  (func $arrays (param $x (ref $vector)) (param $nested-child-array (ref null $nested-child-array)) (param $grandchild (ref null $grandchild)) (result (ref $matrix))
     (local $tv (ref null $vector))
     (local $tm (ref null $matrix))
     (local $tb (ref null $bytes))
@@ -153,10 +150,10 @@
     )
     ;; values may be subtypes
     (array.set $nested-child-array
-      (ref.null $nested-child-array)
+      (local.get $nested-child-array)
       (i32.const 3)
       (ref.as_non_null
-       (ref.null $grandchild)
+       (local.get $grandchild)
       )
     )
     (drop
@@ -185,41 +182,22 @@
     (unreachable)
   )
   (func $ref.is_X (param $x anyref)
-    (if (ref.is_func (local.get $x)) (unreachable))
-    (if (ref.is_data (local.get $x)) (unreachable))
+    (if (ref.is_null (local.get $x)) (unreachable))
     (if (ref.is_i31 (local.get $x)) (unreachable))
   )
-  (func $ref.as_X (param $x anyref)
+  (func $ref.as_X (param $x anyref) (param $f funcref)
     (drop (ref.as_non_null (local.get $x)))
-    (drop (ref.as_func (local.get $x)))
-    (drop (ref.as_data (local.get $x)))
+    (drop (ref.as_func (local.get $f)))
     (drop (ref.as_i31 (local.get $x)))
   )
   (func $br_on_X (param $x anyref)
     (local $y anyref)
     (local $z (ref null any))
     (local $temp-func (ref null func))
-    (local $temp-data (ref null data))
     (local $temp-i31 (ref null i31))
     (block $null
       (local.set $z
         (br_on_null $null (local.get $x))
-      )
-    )
-    (drop
-      (block $func (result funcref)
-        (local.set $y
-          (br_on_func $func (local.get $x))
-        )
-        (ref.null func)
-      )
-    )
-    (drop
-      (block $data (result (ref null data))
-        (local.set $y
-          (br_on_data $data (local.get $x))
-        )
-        (ref.null data)
       )
     )
     (drop
@@ -237,22 +215,6 @@
       )
     )
     (drop
-      (block $non-func (result anyref)
-        (local.set $temp-func
-          (br_on_non_func $non-func (local.get $x))
-        )
-        (ref.null any)
-      )
-    )
-    (drop
-      (block $non-data (result anyref)
-        (local.set $temp-data
-          (br_on_non_data $non-data (local.get $x))
-        )
-        (ref.null any)
-      )
-    )
-    (drop
       (block $non-i31 (result anyref)
         (local.set $temp-i31
           (br_on_non_i31 $non-i31 (local.get $x))
@@ -266,8 +228,8 @@
       (struct.get $struct.C 0 (unreachable))
     )
   )
-  (func $unreachables-2
-    (struct.set $struct.C 0 (ref.null $struct.C) (unreachable))
+  (func $unreachables-2 (param $struct.C (ref null $struct.C))
+    (struct.set $struct.C 0 (local.get $struct.C) (unreachable))
   )
   (func $unreachables-3
     (struct.set $struct.C 0 (unreachable) (unreachable))
@@ -281,9 +243,9 @@
       (i32.const 2)
     )
   )
-  (func $unreachables-array-2
+  (func $unreachables-array-2 (param $vector (ref null $vector))
     (array.get $vector
-      (ref.null $vector)
+      (local.get $vector)
       (unreachable)
     )
   )
@@ -294,16 +256,16 @@
       (f64.const 2.18281828)
     )
   )
-  (func $unreachables-array-4
+  (func $unreachables-array-4 (param $vector (ref null $vector))
     (array.set $vector
-      (ref.null $vector)
+      (local.get $vector)
       (unreachable)
       (f64.const 2.18281828)
     )
   )
-  (func $unreachables-array-5
+  (func $unreachables-array-5 (param $vector (ref null $vector))
     (array.set $vector
-      (ref.null $vector)
+      (local.get $vector)
       (i32.const 2)
       (unreachable)
     )
@@ -343,15 +305,15 @@
     (local $temp.A (ref null $struct.A))
     (local $temp.B (ref null $struct.B))
     (drop
-      (ref.test_static $struct.B (ref.null $struct.A))
+      (ref.test $struct.B (ref.null $struct.A))
     )
     (drop
-      (ref.cast_static $struct.B (ref.null $struct.A))
+      (ref.cast null $struct.B (ref.null $struct.A))
     )
     (drop
       (block $out-B (result (ref $struct.B))
         (local.set $temp.A
-          (br_on_cast_static $out-B $struct.B (ref.null $struct.A))
+          (br_on_cast $out-B $struct.B (ref.null $struct.A))
         )
         (unreachable)
       )
@@ -359,7 +321,7 @@
     (drop
       (block $out-A (result (ref null $struct.A))
         (local.set $temp.B
-          (br_on_cast_static_fail $out-A $struct.B (ref.null $struct.A))
+          (br_on_cast_fail $out-A $struct.B (ref.null $struct.A))
         )
         (unreachable)
       )

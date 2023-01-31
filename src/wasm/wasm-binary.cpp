@@ -86,7 +86,7 @@ void WasmBinaryWriter::write() {
   }
 #endif
 
-  writeLateUserSections();
+  writeLateCustomSections();
   writeFeaturesSection();
 }
 
@@ -186,8 +186,8 @@ void WasmBinaryWriter::finishSection(int32_t start) {
   }
 }
 
-int32_t
-WasmBinaryWriter::startSubsection(BinaryConsts::UserSections::Subsection code) {
+int32_t WasmBinaryWriter::startSubsection(
+  BinaryConsts::CustomSections::Subsection code) {
   return startSection(code);
 }
 
@@ -204,7 +204,7 @@ void WasmBinaryWriter::writeStart() {
 }
 
 void WasmBinaryWriter::writeMemories() {
-  if (wasm->memories.empty()) {
+  if (importInfo->getNumDefinedMemories() == 0) {
     return;
   }
   BYN_TRACE("== writeMemories\n");
@@ -232,12 +232,9 @@ void WasmBinaryWriter::writeTypes() {
   // MVP types are structural and do not use recursion groups.
   TypeSystem typeSystem = getTypeSystem();
   if (!wasm->features.hasGC()) {
-    typeSystem = TypeSystem::Equirecursive;
+    typeSystem = TypeSystem::Isorecursive;
   }
   switch (typeSystem) {
-    case TypeSystem::Equirecursive:
-      numGroups = indexedTypes.types.size();
-      break;
     case TypeSystem::Nominal:
       numGroups = 1;
       break;
@@ -453,6 +450,11 @@ void WasmBinaryWriter::writeFunctions() {
     tableOfContents.functionBodies.emplace_back(
       func->name, sizePos + sizeFieldSize, size);
     binaryLocationTrackedExpressionsForFunc.clear();
+
+    if (func->getParams().size() > WebLimitations::MaxFunctionParams) {
+      std::cerr << "Some VMs may not accept this binary because it has a large "
+                << "number of parameters in function " << func->name << ".\n";
+    }
   });
   finishSection(sectionStart);
 }
@@ -794,13 +796,13 @@ void WasmBinaryWriter::writeTags() {
 
 void WasmBinaryWriter::writeNames() {
   BYN_TRACE("== writeNames\n");
-  auto start = startSection(BinaryConsts::Section::User);
-  writeInlineString(BinaryConsts::UserSections::Name);
+  auto start = startSection(BinaryConsts::Section::Custom);
+  writeInlineString(BinaryConsts::CustomSections::Name);
 
   // module name
   if (emitModuleName && wasm->name.is()) {
     auto substart =
-      startSubsection(BinaryConsts::UserSections::Subsection::NameModule);
+      startSubsection(BinaryConsts::CustomSections::Subsection::NameModule);
     writeEscapedName(wasm->name.str);
     finishSubsection(substart);
   }
@@ -814,7 +816,7 @@ void WasmBinaryWriter::writeNames() {
   // function names
   {
     auto substart =
-      startSubsection(BinaryConsts::UserSections::Subsection::NameFunction);
+      startSubsection(BinaryConsts::CustomSections::Subsection::NameFunction);
     o << U32LEB(indexes.functionIndexes.size());
     Index emitted = 0;
     auto add = [&](Function* curr) {
@@ -850,7 +852,7 @@ void WasmBinaryWriter::writeNames() {
     if (functionsWithLocalNames.size() > 0) {
       // Otherwise emit those functions but only include locals with a name.
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameLocal);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameLocal);
       o << U32LEB(functionsWithLocalNames.size());
       Index emitted = 0;
       for (auto& [index, func] : functionsWithLocalNames) {
@@ -901,7 +903,7 @@ void WasmBinaryWriter::writeNames() {
     }
     if (!namedTypes.empty()) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameType);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameType);
       o << U32LEB(namedTypes.size());
       for (auto type : namedTypes) {
         o << U32LEB(indexedTypes.indices[type]);
@@ -927,7 +929,7 @@ void WasmBinaryWriter::writeNames() {
 
     if (tablesWithNames.size() > 0) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameTable);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameTable);
       o << U32LEB(tablesWithNames.size());
 
       for (auto& [index, table] : tablesWithNames) {
@@ -954,7 +956,7 @@ void WasmBinaryWriter::writeNames() {
     assert(checked == indexes.memoryIndexes.size());
     if (memoriesWithNames.size() > 0) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameMemory);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameMemory);
       o << U32LEB(memoriesWithNames.size());
       for (auto& [index, memory] : memoriesWithNames) {
         o << U32LEB(index);
@@ -979,7 +981,7 @@ void WasmBinaryWriter::writeNames() {
     assert(checked == indexes.globalIndexes.size());
     if (globalsWithNames.size() > 0) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameGlobal);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameGlobal);
       o << U32LEB(globalsWithNames.size());
       for (auto& [index, global] : globalsWithNames) {
         o << U32LEB(index);
@@ -1003,7 +1005,7 @@ void WasmBinaryWriter::writeNames() {
 
     if (elemsWithNames.size() > 0) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameElem);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameElem);
       o << U32LEB(elemsWithNames.size());
 
       for (auto& [index, elem] : elemsWithNames) {
@@ -1026,7 +1028,7 @@ void WasmBinaryWriter::writeNames() {
 
     if (count) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameData);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameData);
       o << U32LEB(count);
       for (Index i = 0; i < wasm->dataSegments.size(); i++) {
         auto& seg = wasm->dataSegments[i];
@@ -1053,7 +1055,7 @@ void WasmBinaryWriter::writeNames() {
     }
     if (!relevantTypes.empty()) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameField);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameField);
       o << U32LEB(relevantTypes.size());
       for (Index i = 0; i < relevantTypes.size(); i++) {
         auto type = relevantTypes[i];
@@ -1081,7 +1083,7 @@ void WasmBinaryWriter::writeNames() {
 
     if (count) {
       auto substart =
-        startSubsection(BinaryConsts::UserSections::Subsection::NameTag);
+        startSubsection(BinaryConsts::CustomSections::Subsection::NameTag);
       o << U32LEB(count);
       for (Index i = 0; i < wasm->tags.size(); i++) {
         auto& tag = wasm->tags[i];
@@ -1099,8 +1101,8 @@ void WasmBinaryWriter::writeNames() {
 
 void WasmBinaryWriter::writeSourceMapUrl() {
   BYN_TRACE("== writeSourceMapUrl\n");
-  auto start = startSection(BinaryConsts::Section::User);
-  writeInlineString(BinaryConsts::UserSections::SourceMapUrl);
+  auto start = startSection(BinaryConsts::Section::Custom);
+  writeInlineString(BinaryConsts::CustomSections::SourceMapUrl);
   writeInlineString(sourceMapUrl.c_str());
   finishSection(start);
 }
@@ -1168,16 +1170,16 @@ void WasmBinaryWriter::writeSourceMapEpilog() {
   *sourceMap << "\"}";
 }
 
-void WasmBinaryWriter::writeLateUserSections() {
-  for (auto& section : wasm->userSections) {
-    if (section.name != BinaryConsts::UserSections::Dylink) {
-      writeUserSection(section);
+void WasmBinaryWriter::writeLateCustomSections() {
+  for (auto& section : wasm->customSections) {
+    if (section.name != BinaryConsts::CustomSections::Dylink) {
+      writeCustomSection(section);
     }
   }
 }
 
-void WasmBinaryWriter::writeUserSection(const UserSection& section) {
-  auto start = startSection(BinaryConsts::User);
+void WasmBinaryWriter::writeCustomSection(const CustomSection& section) {
+  auto start = startSection(BinaryConsts::Custom);
   writeInlineString(section.name.c_str());
   for (size_t i = 0; i < section.data.size(); i++) {
     o << uint8_t(section.data[i]);
@@ -1195,37 +1197,37 @@ void WasmBinaryWriter::writeFeaturesSection() {
   auto toString = [](FeatureSet::Feature f) {
     switch (f) {
       case FeatureSet::Atomics:
-        return BinaryConsts::UserSections::AtomicsFeature;
+        return BinaryConsts::CustomSections::AtomicsFeature;
       case FeatureSet::MutableGlobals:
-        return BinaryConsts::UserSections::MutableGlobalsFeature;
+        return BinaryConsts::CustomSections::MutableGlobalsFeature;
       case FeatureSet::TruncSat:
-        return BinaryConsts::UserSections::TruncSatFeature;
+        return BinaryConsts::CustomSections::TruncSatFeature;
       case FeatureSet::SIMD:
-        return BinaryConsts::UserSections::SIMD128Feature;
+        return BinaryConsts::CustomSections::SIMD128Feature;
       case FeatureSet::BulkMemory:
-        return BinaryConsts::UserSections::BulkMemoryFeature;
+        return BinaryConsts::CustomSections::BulkMemoryFeature;
       case FeatureSet::SignExt:
-        return BinaryConsts::UserSections::SignExtFeature;
+        return BinaryConsts::CustomSections::SignExtFeature;
       case FeatureSet::ExceptionHandling:
-        return BinaryConsts::UserSections::ExceptionHandlingFeature;
+        return BinaryConsts::CustomSections::ExceptionHandlingFeature;
       case FeatureSet::TailCall:
-        return BinaryConsts::UserSections::TailCallFeature;
+        return BinaryConsts::CustomSections::TailCallFeature;
       case FeatureSet::ReferenceTypes:
-        return BinaryConsts::UserSections::ReferenceTypesFeature;
+        return BinaryConsts::CustomSections::ReferenceTypesFeature;
       case FeatureSet::Multivalue:
-        return BinaryConsts::UserSections::MultivalueFeature;
+        return BinaryConsts::CustomSections::MultivalueFeature;
       case FeatureSet::GC:
-        return BinaryConsts::UserSections::GCFeature;
+        return BinaryConsts::CustomSections::GCFeature;
       case FeatureSet::Memory64:
-        return BinaryConsts::UserSections::Memory64Feature;
+        return BinaryConsts::CustomSections::Memory64Feature;
       case FeatureSet::RelaxedSIMD:
-        return BinaryConsts::UserSections::RelaxedSIMDFeature;
+        return BinaryConsts::CustomSections::RelaxedSIMDFeature;
       case FeatureSet::ExtendedConst:
-        return BinaryConsts::UserSections::ExtendedConstFeature;
+        return BinaryConsts::CustomSections::ExtendedConstFeature;
       case FeatureSet::Strings:
-        return BinaryConsts::UserSections::StringsFeature;
+        return BinaryConsts::CustomSections::StringsFeature;
       case FeatureSet::MultiMemories:
-        return BinaryConsts::UserSections::MultiMemoriesFeature;
+        return BinaryConsts::CustomSections::MultiMemoriesFeature;
       default:
         WASM_UNREACHABLE("unexpected feature flag");
     }
@@ -1235,8 +1237,8 @@ void WasmBinaryWriter::writeFeaturesSection() {
   wasm->features.iterFeatures(
     [&](FeatureSet::Feature f) { features.push_back(toString(f)); });
 
-  auto start = startSection(BinaryConsts::User);
-  writeInlineString(BinaryConsts::UserSections::TargetFeatures);
+  auto start = startSection(BinaryConsts::Custom);
+  writeInlineString(BinaryConsts::CustomSections::TargetFeatures);
   o << U32LEB(features.size());
   for (auto& f : features) {
     o << uint8_t(BinaryConsts::FeatureUsed);
@@ -1250,15 +1252,15 @@ void WasmBinaryWriter::writeLegacyDylinkSection() {
     return;
   }
 
-  auto start = startSection(BinaryConsts::User);
-  writeInlineString(BinaryConsts::UserSections::Dylink);
+  auto start = startSection(BinaryConsts::Custom);
+  writeInlineString(BinaryConsts::CustomSections::Dylink);
   o << U32LEB(wasm->dylinkSection->memorySize);
   o << U32LEB(wasm->dylinkSection->memoryAlignment);
   o << U32LEB(wasm->dylinkSection->tableSize);
   o << U32LEB(wasm->dylinkSection->tableAlignment);
   o << U32LEB(wasm->dylinkSection->neededDynlibs.size());
   for (auto& neededDynlib : wasm->dylinkSection->neededDynlibs) {
-    writeInlineString(neededDynlib.c_str());
+    writeInlineString(neededDynlib.str);
   }
   finishSection(start);
 }
@@ -1273,11 +1275,11 @@ void WasmBinaryWriter::writeDylinkSection() {
     return;
   }
 
-  auto start = startSection(BinaryConsts::User);
-  writeInlineString(BinaryConsts::UserSections::Dylink0);
+  auto start = startSection(BinaryConsts::Custom);
+  writeInlineString(BinaryConsts::CustomSections::Dylink0);
 
   auto substart =
-    startSubsection(BinaryConsts::UserSections::Subsection::DylinkMemInfo);
+    startSubsection(BinaryConsts::CustomSections::Subsection::DylinkMemInfo);
   o << U32LEB(wasm->dylinkSection->memorySize);
   o << U32LEB(wasm->dylinkSection->memoryAlignment);
   o << U32LEB(wasm->dylinkSection->tableSize);
@@ -1286,10 +1288,10 @@ void WasmBinaryWriter::writeDylinkSection() {
 
   if (wasm->dylinkSection->neededDynlibs.size()) {
     substart =
-      startSubsection(BinaryConsts::UserSections::Subsection::DylinkNeeded);
+      startSubsection(BinaryConsts::CustomSections::Subsection::DylinkNeeded);
     o << U32LEB(wasm->dylinkSection->neededDynlibs.size());
     for (auto& neededDynlib : wasm->dylinkSection->neededDynlibs) {
-      writeInlineString(neededDynlib.c_str());
+      writeInlineString(neededDynlib.str);
     }
     finishSubsection(substart);
   }
@@ -1345,10 +1347,9 @@ void WasmBinaryWriter::writeData(const char* data, size_t size) {
   }
 }
 
-void WasmBinaryWriter::writeInlineString(const char* name) {
-  int32_t size = strlen(name);
-  o << U32LEB(size);
-  writeData(name, size);
+void WasmBinaryWriter::writeInlineString(std::string_view name) {
+  o << U32LEB(name.size());
+  writeData(name.data(), name.size());
 }
 
 static bool isHexDigit(char ch) {
@@ -1360,19 +1361,17 @@ static int decodeHexNibble(char ch) {
   return ch <= '9' ? ch & 15 : (ch & 15) + 9;
 }
 
-void WasmBinaryWriter::writeEscapedName(const char* name) {
-  assert(name);
-  if (!strpbrk(name, "\\")) {
+void WasmBinaryWriter::writeEscapedName(std::string_view name) {
+  if (name.find('\\') == std::string_view::npos) {
     writeInlineString(name);
     return;
   }
   // decode escaped by escapeName (see below) function names
   std::string unescaped;
-  int32_t size = strlen(name);
-  for (int32_t i = 0; i < size;) {
+  for (size_t i = 0; i < name.size();) {
     char ch = name[i++];
     // support only `\xx` escapes; ignore invalid or unsupported escapes
-    if (ch != '\\' || i + 1 >= size || !isHexDigit(name[i]) ||
+    if (ch != '\\' || i + 1 >= name.size() || !isHexDigit(name[i]) ||
         !isHexDigit(name[i + 1])) {
       unescaped.push_back(ch);
       continue;
@@ -1381,7 +1380,7 @@ void WasmBinaryWriter::writeEscapedName(const char* name) {
       char((decodeHexNibble(name[i]) << 4) | decodeHexNibble(name[i + 1])));
     i += 2;
   }
-  writeInlineString(unescaped.c_str());
+  writeInlineString({unescaped.data(), unescaped.size()});
 }
 
 void WasmBinaryWriter::writeInlineBuffer(const char* data, size_t size) {
@@ -1409,8 +1408,11 @@ void WasmBinaryWriter::writeType(Type type) {
         case HeapType::i31:
           o << S32LEB(BinaryConsts::EncodedType::i31ref);
           return;
-        case HeapType::data:
-          o << S32LEB(BinaryConsts::EncodedType::dataref);
+        case HeapType::struct_:
+          o << S32LEB(BinaryConsts::EncodedType::structref);
+          return;
+        case HeapType::array:
+          o << S32LEB(BinaryConsts::EncodedType::arrayref);
           return;
         case HeapType::string:
           o << S32LEB(BinaryConsts::EncodedType::stringref);
@@ -1423,6 +1425,25 @@ void WasmBinaryWriter::writeType(Type type) {
           return;
         case HeapType::stringview_iter:
           o << S32LEB(BinaryConsts::EncodedType::stringview_iter);
+          return;
+        case HeapType::none:
+          o << S32LEB(BinaryConsts::EncodedType::nullref);
+          return;
+        case HeapType::noext:
+          // See comment on writeHeapType.
+          if (!wasm->features.hasGC()) {
+            o << S32LEB(BinaryConsts::EncodedType::externref);
+          } else {
+            o << S32LEB(BinaryConsts::EncodedType::nullexternref);
+          }
+          return;
+        case HeapType::nofunc:
+          // See comment on writeHeapType.
+          if (!wasm->features.hasGC()) {
+            o << S32LEB(BinaryConsts::EncodedType::funcref);
+          } else {
+            o << S32LEB(BinaryConsts::EncodedType::nullfuncref);
+          }
           return;
       }
     }
@@ -1463,46 +1484,66 @@ void WasmBinaryWriter::writeType(Type type) {
 }
 
 void WasmBinaryWriter::writeHeapType(HeapType type) {
+  // ref.null always has a bottom heap type in Binaryen IR, but those types are
+  // only actually valid with GC enabled. When GC is not enabled, emit the
+  // corresponding valid top types instead.
+  if (!wasm->features.hasGC()) {
+    if (type == HeapType::nofunc || type.isSignature()) {
+      type = HeapType::func;
+    } else if (type == HeapType::noext) {
+      type = HeapType::ext;
+    }
+  }
+
   if (type.isSignature() || type.isStruct() || type.isArray()) {
     o << S64LEB(getTypeIndex(type)); // TODO: Actually s33
     return;
   }
   int ret = 0;
-  if (type.isBasic()) {
-    switch (type.getBasic()) {
-      case HeapType::ext:
-        ret = BinaryConsts::EncodedHeapType::ext;
-        break;
-      case HeapType::func:
-        ret = BinaryConsts::EncodedHeapType::func;
-        break;
-      case HeapType::any:
-        ret = BinaryConsts::EncodedHeapType::any;
-        break;
-      case HeapType::eq:
-        ret = BinaryConsts::EncodedHeapType::eq;
-        break;
-      case HeapType::i31:
-        ret = BinaryConsts::EncodedHeapType::i31;
-        break;
-      case HeapType::data:
-        ret = BinaryConsts::EncodedHeapType::data;
-        break;
-      case HeapType::string:
-        ret = BinaryConsts::EncodedHeapType::string;
-        break;
-      case HeapType::stringview_wtf8:
-        ret = BinaryConsts::EncodedHeapType::stringview_wtf8_heap;
-        break;
-      case HeapType::stringview_wtf16:
-        ret = BinaryConsts::EncodedHeapType::stringview_wtf16_heap;
-        break;
-      case HeapType::stringview_iter:
-        ret = BinaryConsts::EncodedHeapType::stringview_iter_heap;
-        break;
-    }
-  } else {
-    WASM_UNREACHABLE("TODO: compound GC types");
+  assert(type.isBasic());
+  switch (type.getBasic()) {
+    case HeapType::ext:
+      ret = BinaryConsts::EncodedHeapType::ext;
+      break;
+    case HeapType::func:
+      ret = BinaryConsts::EncodedHeapType::func;
+      break;
+    case HeapType::any:
+      ret = BinaryConsts::EncodedHeapType::any;
+      break;
+    case HeapType::eq:
+      ret = BinaryConsts::EncodedHeapType::eq;
+      break;
+    case HeapType::i31:
+      ret = BinaryConsts::EncodedHeapType::i31;
+      break;
+    case HeapType::struct_:
+      ret = BinaryConsts::EncodedHeapType::struct_;
+      break;
+    case HeapType::array:
+      ret = BinaryConsts::EncodedHeapType::array;
+      break;
+    case HeapType::string:
+      ret = BinaryConsts::EncodedHeapType::string;
+      break;
+    case HeapType::stringview_wtf8:
+      ret = BinaryConsts::EncodedHeapType::stringview_wtf8_heap;
+      break;
+    case HeapType::stringview_wtf16:
+      ret = BinaryConsts::EncodedHeapType::stringview_wtf16_heap;
+      break;
+    case HeapType::stringview_iter:
+      ret = BinaryConsts::EncodedHeapType::stringview_iter_heap;
+      break;
+    case HeapType::none:
+      ret = BinaryConsts::EncodedHeapType::none;
+      break;
+    case HeapType::noext:
+      ret = BinaryConsts::EncodedHeapType::noext;
+      break;
+    case HeapType::nofunc:
+      ret = BinaryConsts::EncodedHeapType::nofunc;
+      break;
   }
   o << S64LEB(ret); // TODO: Actually s33
 }
@@ -1548,7 +1589,7 @@ bool WasmBinaryBuilder::hasDWARFSections() {
       throwError("Section extends beyond end of input");
     }
     auto oldPos = pos;
-    if (sectionCode == BinaryConsts::Section::User) {
+    if (sectionCode == BinaryConsts::Section::Custom) {
       auto sectionName = getInlineString();
       if (Debug::isDWARFSection(sectionName)) {
         has = true;
@@ -1588,7 +1629,7 @@ void WasmBinaryBuilder::read() {
 
     // note the section in the list of seen sections, as almost no sections can
     // appear more than once, and verify those that shouldn't do not.
-    if (sectionCode != BinaryConsts::Section::User &&
+    if (sectionCode != BinaryConsts::Section::Custom &&
         sectionCode != BinaryConsts::Section::Code) {
       if (!seenSections.insert(BinaryConsts::Section(sectionCode)).second) {
         throwError("section seen more than once: " +
@@ -1643,7 +1684,7 @@ void WasmBinaryBuilder::read() {
         readTags();
         break;
       default: {
-        readUserSection(payloadLen);
+        readCustomSection(payloadLen);
         if (pos > oldPos + payloadLen) {
           throwError("bad user section size, started at " +
                      std::to_string(oldPos) + " plus payload " +
@@ -1666,8 +1707,8 @@ void WasmBinaryBuilder::read() {
   processNames();
 }
 
-void WasmBinaryBuilder::readUserSection(size_t payloadLen) {
-  BYN_TRACE("== readUserSection\n");
+void WasmBinaryBuilder::readCustomSection(size_t payloadLen) {
+  BYN_TRACE("== readCustomSection\n");
   auto oldPos = pos;
   Name sectionName = getInlineString();
   size_t read = pos - oldPos;
@@ -1675,40 +1716,39 @@ void WasmBinaryBuilder::readUserSection(size_t payloadLen) {
     throwError("bad user section size");
   }
   payloadLen -= read;
-  if (sectionName.equals(BinaryConsts::UserSections::Name)) {
+  if (sectionName.equals(BinaryConsts::CustomSections::Name)) {
     if (debugInfo) {
       readNames(payloadLen);
     } else {
       pos += payloadLen;
     }
-  } else if (sectionName.equals(BinaryConsts::UserSections::TargetFeatures)) {
+  } else if (sectionName.equals(BinaryConsts::CustomSections::TargetFeatures)) {
     readFeatures(payloadLen);
-  } else if (sectionName.equals(BinaryConsts::UserSections::Dylink)) {
+  } else if (sectionName.equals(BinaryConsts::CustomSections::Dylink)) {
     readDylink(payloadLen);
-  } else if (sectionName.equals(BinaryConsts::UserSections::Dylink0)) {
+  } else if (sectionName.equals(BinaryConsts::CustomSections::Dylink0)) {
     readDylink0(payloadLen);
   } else {
     // an unfamiliar custom section
-    if (sectionName.equals(BinaryConsts::UserSections::Linking)) {
+    if (sectionName.equals(BinaryConsts::CustomSections::Linking)) {
       std::cerr
         << "warning: linking section is present, so this is not a standard "
            "wasm file - binaryen cannot handle this properly!\n";
     }
-    wasm.userSections.resize(wasm.userSections.size() + 1);
-    auto& section = wasm.userSections.back();
+    wasm.customSections.resize(wasm.customSections.size() + 1);
+    auto& section = wasm.customSections.back();
     section.name = sectionName.str;
     auto data = getByteView(payloadLen);
-    section.data = {data.first, data.second};
+    section.data = {data.begin(), data.end()};
   }
 }
 
-std::pair<const char*, const char*>
-WasmBinaryBuilder::getByteView(size_t size) {
+std::string_view WasmBinaryBuilder::getByteView(size_t size) {
   if (size > input.size() || pos > input.size() - size) {
     throwError("unexpected end of input");
   }
   pos += size;
-  return {input.data() + (pos - size), input.data() + pos};
+  return {input.data() + (pos - size), size};
 }
 
 uint8_t WasmBinaryBuilder::getInt8() {
@@ -1847,8 +1887,11 @@ bool WasmBinaryBuilder::getBasicType(int32_t code, Type& out) {
     case BinaryConsts::EncodedType::i31ref:
       out = Type(HeapType::i31, Nullable);
       return true;
-    case BinaryConsts::EncodedType::dataref:
-      out = Type(HeapType::data, Nullable);
+    case BinaryConsts::EncodedType::structref:
+      out = Type(HeapType::struct_, Nullable);
+      return true;
+    case BinaryConsts::EncodedType::arrayref:
+      out = Type(HeapType::array, Nullable);
       return true;
     case BinaryConsts::EncodedType::stringref:
       out = Type(HeapType::string, Nullable);
@@ -1861,6 +1904,15 @@ bool WasmBinaryBuilder::getBasicType(int32_t code, Type& out) {
       return true;
     case BinaryConsts::EncodedType::stringview_iter:
       out = Type(HeapType::stringview_iter, Nullable);
+      return true;
+    case BinaryConsts::EncodedType::nullref:
+      out = Type(HeapType::none, Nullable);
+      return true;
+    case BinaryConsts::EncodedType::nullexternref:
+      out = Type(HeapType::noext, Nullable);
+      return true;
+    case BinaryConsts::EncodedType::nullfuncref:
+      out = Type(HeapType::nofunc, Nullable);
       return true;
     default:
       return false;
@@ -1884,8 +1936,11 @@ bool WasmBinaryBuilder::getBasicHeapType(int64_t code, HeapType& out) {
     case BinaryConsts::EncodedHeapType::i31:
       out = HeapType::i31;
       return true;
-    case BinaryConsts::EncodedHeapType::data:
-      out = HeapType::data;
+    case BinaryConsts::EncodedHeapType::struct_:
+      out = HeapType::struct_;
+      return true;
+    case BinaryConsts::EncodedHeapType::array:
+      out = HeapType::array;
       return true;
     case BinaryConsts::EncodedHeapType::string:
       out = HeapType::string;
@@ -1898,6 +1953,15 @@ bool WasmBinaryBuilder::getBasicHeapType(int64_t code, HeapType& out) {
       return true;
     case BinaryConsts::EncodedHeapType::stringview_iter_heap:
       out = HeapType::stringview_iter;
+      return true;
+    case BinaryConsts::EncodedHeapType::none:
+      out = HeapType::none;
+      return true;
+    case BinaryConsts::EncodedHeapType::noext:
+      out = HeapType::noext;
+      return true;
+    case BinaryConsts::EncodedHeapType::nofunc:
+      out = HeapType::nofunc;
       return true;
     default:
       return false;
@@ -1967,17 +2031,10 @@ Type WasmBinaryBuilder::getConcreteType() {
 Name WasmBinaryBuilder::getInlineString() {
   BYN_TRACE("<==\n");
   auto len = getU32LEB();
-
   auto data = getByteView(len);
 
-  std::string str(data.first, data.second);
-  if (str.find('\0') != std::string::npos) {
-    throwError(
-      "inline string contains NULL (0). that is technically valid in wasm, "
-      "but you shouldn't do it, and it's not supported in binaryen");
-  }
-  BYN_TRACE("getInlineString: " << str << " ==>\n");
-  return Name(str);
+  BYN_TRACE("getInlineString: " << data << " ==>\n");
+  return Name(data);
 }
 
 void WasmBinaryBuilder::verifyInt8(int8_t x) {
@@ -2131,9 +2188,6 @@ void WasmBinaryBuilder::readTypes() {
     auto form = getS32LEB();
     if (form == BinaryConsts::EncodedType::Rec) {
       uint32_t groupSize = getU32LEB();
-      if (getTypeSystem() == TypeSystem::Equirecursive) {
-        throwError("Recursion groups not allowed with equirecursive typing");
-      }
       if (groupSize == 0u) {
         // TODO: Support groups of size zero by shrinking the builder.
         throwError("Recursion groups of size zero not supported");
@@ -2186,7 +2240,13 @@ void WasmBinaryBuilder::readTypes() {
               "The only allowed trivial supertype for functions is func");
           }
         } else {
-          if (basicSuper != HeapType::data) {
+          // Check for "struct" here even if we are parsing an array definition.
+          // This is the old nonstandard "struct_subtype" or "array_subtype"
+          // form of type definitions that used the old "data" type as the
+          // supertype placeholder when there was no nontrivial supertype.
+          // "data" no longer exists, but "struct" has the same encoding it used
+          // to have.
+          if (basicSuper != HeapType::struct_) {
             throwError("The only allowed trivial supertype for structs and "
                        "arrays is data");
           }
@@ -2298,8 +2358,8 @@ void WasmBinaryBuilder::readImports() {
         functionTypes.push_back(getTypeByIndex(index));
         auto type = getTypeByIndex(index);
         if (!type.isSignature()) {
-          throwError(std::string("Imported function ") + module.str + '.' +
-                     base.str +
+          throwError(std::string("Imported function ") + module.toString() +
+                     '.' + base.toString() +
                      "'s type must be a signature. Given: " + type.toString());
         }
         auto curr = builder.makeFunction(name, type, {});
@@ -2844,7 +2904,14 @@ void WasmBinaryBuilder::skipUnreachableCode() {
       expressionStack = savedStack;
       return;
     }
-    pushExpression(curr);
+    if (curr->type == Type::unreachable) {
+      // Nothing before this unreachable should be available to future
+      // expressions. They will get `(unreachable)`s if they try to pop past
+      // this point.
+      expressionStack.clear();
+    } else {
+      pushExpression(curr);
+    }
   }
 }
 
@@ -3055,18 +3122,20 @@ void WasmBinaryBuilder::readDataSegments() {
     }
     curr->setName(Name::fromInt(i), false);
     curr->isPassive = flags & BinaryConsts::IsPassive;
-    Index memIdx = 0;
-    if (flags & BinaryConsts::HasIndex) {
-      memIdx = getU32LEB();
-    }
-    auto* memory = getMemory(memIdx);
-    curr->memory = memory->name;
-    if (!curr->isPassive) {
+    if (curr->isPassive) {
+      curr->memory = Name();
+      curr->offset = nullptr;
+    } else {
+      Index memIdx = 0;
+      if (flags & BinaryConsts::HasIndex) {
+        memIdx = getU32LEB();
+      }
+      memoryRefs[memIdx].push_back(&curr->memory);
       curr->offset = readExpression();
     }
     auto size = getU32LEB();
     auto data = getByteView(size);
-    curr->data = {data.first, data.second};
+    curr->data = {data.begin(), data.end()};
     wasm.addDataSegment(std::move(curr));
   }
 }
@@ -3113,8 +3182,7 @@ void WasmBinaryBuilder::readElementSegments() {
     if (isDeclarative) {
       // Declared segments are needed in wasm text and binary, but not in
       // Binaryen IR; skip over the segment
-      auto type = getU32LEB();
-      WASM_UNUSED(type);
+      [[maybe_unused]] auto type = getU32LEB();
       auto num = getU32LEB();
       for (Index i = 0; i < num; i++) {
         getU32LEB();
@@ -3202,24 +3270,25 @@ static char formatNibble(int nibble) {
 
 Name WasmBinaryBuilder::escape(Name name) {
   bool allIdChars = true;
-  for (const char* p = name.str; allIdChars && *p; p++) {
-    allIdChars = isIdChar(*p);
+  for (char c : name.str) {
+    if (!(allIdChars = isIdChar(c))) {
+      break;
+    }
   }
   if (allIdChars) {
     return name;
   }
   // encode name, if at least one non-idchar (per WebAssembly spec) was found
   std::string escaped;
-  for (const char* p = name.str; *p; p++) {
-    char ch = *p;
-    if (isIdChar(ch)) {
-      escaped.push_back(ch);
+  for (char c : name.str) {
+    if (isIdChar(c)) {
+      escaped.push_back(c);
       continue;
     }
     // replace non-idchar with `\xx` escape
     escaped.push_back('\\');
-    escaped.push_back(formatNibble(ch >> 4));
-    escaped.push_back(formatNibble(ch & 15));
+    escaped.push_back(formatNibble(c >> 4));
+    escaped.push_back(formatNibble(c & 15));
   }
   return escaped;
 }
@@ -3258,10 +3327,10 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
     lastType = nameType;
     auto subsectionSize = getU32LEB();
     auto subsectionPos = pos;
-    if (nameType == BinaryConsts::UserSections::Subsection::NameModule) {
+    using Subsection = BinaryConsts::CustomSections::Subsection;
+    if (nameType == Subsection::NameModule) {
       wasm.name = getInlineString();
-    } else if (nameType ==
-               BinaryConsts::UserSections::Subsection::NameFunction) {
+    } else if (nameType == Subsection::NameFunction) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3277,7 +3346,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameLocal) {
+    } else if (nameType == Subsection::NameLocal) {
       auto numFuncs = getU32LEB();
       for (size_t i = 0; i < numFuncs; i++) {
         auto funcIndex = getU32LEB();
@@ -3314,7 +3383,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
           }
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameType) {
+    } else if (nameType == Subsection::NameType) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3330,7 +3399,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameTable) {
+    } else if (nameType == Subsection::NameTable) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3353,7 +3422,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameElem) {
+    } else if (nameType == Subsection::NameElem) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3370,7 +3439,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameMemory) {
+    } else if (nameType == Subsection::NameMemory) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3386,7 +3455,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameData) {
+    } else if (nameType == Subsection::NameData) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3402,7 +3471,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameGlobal) {
+    } else if (nameType == Subsection::NameGlobal) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3418,7 +3487,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
                     << std::to_string(index) << std::endl;
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameField) {
+    } else if (nameType == Subsection::NameField) {
       auto numTypes = getU32LEB();
       for (size_t i = 0; i < numTypes; i++) {
         auto typeIndex = getU32LEB();
@@ -3438,7 +3507,7 @@ void WasmBinaryBuilder::readNames(size_t payloadLen) {
           }
         }
       }
-    } else if (nameType == BinaryConsts::UserSections::Subsection::NameTag) {
+    } else if (nameType == Subsection::NameTag) {
       auto num = getU32LEB();
       NameProcessor processor;
       for (size_t i = 0; i < num; i++) {
@@ -3493,37 +3562,37 @@ void WasmBinaryBuilder::readFeatures(size_t payloadLen) {
     }
 
     FeatureSet feature;
-    if (name == BinaryConsts::UserSections::AtomicsFeature) {
+    if (name == BinaryConsts::CustomSections::AtomicsFeature) {
       feature = FeatureSet::Atomics;
-    } else if (name == BinaryConsts::UserSections::BulkMemoryFeature) {
+    } else if (name == BinaryConsts::CustomSections::BulkMemoryFeature) {
       feature = FeatureSet::BulkMemory;
-    } else if (name == BinaryConsts::UserSections::ExceptionHandlingFeature) {
+    } else if (name == BinaryConsts::CustomSections::ExceptionHandlingFeature) {
       feature = FeatureSet::ExceptionHandling;
-    } else if (name == BinaryConsts::UserSections::MutableGlobalsFeature) {
+    } else if (name == BinaryConsts::CustomSections::MutableGlobalsFeature) {
       feature = FeatureSet::MutableGlobals;
-    } else if (name == BinaryConsts::UserSections::TruncSatFeature) {
+    } else if (name == BinaryConsts::CustomSections::TruncSatFeature) {
       feature = FeatureSet::TruncSat;
-    } else if (name == BinaryConsts::UserSections::SignExtFeature) {
+    } else if (name == BinaryConsts::CustomSections::SignExtFeature) {
       feature = FeatureSet::SignExt;
-    } else if (name == BinaryConsts::UserSections::SIMD128Feature) {
+    } else if (name == BinaryConsts::CustomSections::SIMD128Feature) {
       feature = FeatureSet::SIMD;
-    } else if (name == BinaryConsts::UserSections::TailCallFeature) {
+    } else if (name == BinaryConsts::CustomSections::TailCallFeature) {
       feature = FeatureSet::TailCall;
-    } else if (name == BinaryConsts::UserSections::ReferenceTypesFeature) {
+    } else if (name == BinaryConsts::CustomSections::ReferenceTypesFeature) {
       feature = FeatureSet::ReferenceTypes;
-    } else if (name == BinaryConsts::UserSections::MultivalueFeature) {
+    } else if (name == BinaryConsts::CustomSections::MultivalueFeature) {
       feature = FeatureSet::Multivalue;
-    } else if (name == BinaryConsts::UserSections::GCFeature) {
+    } else if (name == BinaryConsts::CustomSections::GCFeature) {
       feature = FeatureSet::GC;
-    } else if (name == BinaryConsts::UserSections::Memory64Feature) {
+    } else if (name == BinaryConsts::CustomSections::Memory64Feature) {
       feature = FeatureSet::Memory64;
-    } else if (name == BinaryConsts::UserSections::RelaxedSIMDFeature) {
+    } else if (name == BinaryConsts::CustomSections::RelaxedSIMDFeature) {
       feature = FeatureSet::RelaxedSIMD;
-    } else if (name == BinaryConsts::UserSections::ExtendedConstFeature) {
+    } else if (name == BinaryConsts::CustomSections::ExtendedConstFeature) {
       feature = FeatureSet::ExtendedConst;
-    } else if (name == BinaryConsts::UserSections::StringsFeature) {
+    } else if (name == BinaryConsts::CustomSections::StringsFeature) {
       feature = FeatureSet::Strings;
-    } else if (name == BinaryConsts::UserSections::MultiMemoriesFeature) {
+    } else if (name == BinaryConsts::CustomSections::MultiMemoriesFeature) {
       feature = FeatureSet::MultiMemories;
     } else {
       // Silently ignore unknown features (this may be and old binaryen running
@@ -3581,13 +3650,13 @@ void WasmBinaryBuilder::readDylink0(size_t payloadLen) {
     lastType = dylinkType;
     auto subsectionSize = getU32LEB();
     auto subsectionPos = pos;
-    if (dylinkType == BinaryConsts::UserSections::Subsection::DylinkMemInfo) {
+    if (dylinkType == BinaryConsts::CustomSections::Subsection::DylinkMemInfo) {
       wasm.dylinkSection->memorySize = getU32LEB();
       wasm.dylinkSection->memoryAlignment = getU32LEB();
       wasm.dylinkSection->tableSize = getU32LEB();
       wasm.dylinkSection->tableAlignment = getU32LEB();
     } else if (dylinkType ==
-               BinaryConsts::UserSections::Subsection::DylinkNeeded) {
+               BinaryConsts::CustomSections::Subsection::DylinkNeeded) {
       size_t numNeededDynlibs = getU32LEB();
       for (size_t i = 0; i < numNeededDynlibs; ++i) {
         wasm.dylinkSection->neededDynlibs.push_back(getInlineString());
@@ -3598,7 +3667,7 @@ void WasmBinaryBuilder::readDylink0(size_t payloadLen) {
       pos = oldPos;
       size_t remaining = (sectionPos + payloadLen) - pos;
       auto tail = getByteView(remaining);
-      wasm.dylinkSection->tail = {tail.first, tail.second};
+      wasm.dylinkSection->tail = {tail.begin(), tail.end()};
       break;
     }
     if (pos != subsectionPos + subsectionSize) {
@@ -3732,7 +3801,7 @@ BinaryConsts::ASTNodes WasmBinaryBuilder::readExpression(Expression*& curr) {
       visitRefNull((curr = allocator.alloc<RefNull>())->cast<RefNull>());
       break;
     case BinaryConsts::RefIsNull:
-      visitRefIs((curr = allocator.alloc<RefIs>())->cast<RefIs>(), code);
+      visitRefIsNull((curr = allocator.alloc<RefIsNull>())->cast<RefIsNull>());
       break;
     case BinaryConsts::RefFunc:
       visitRefFunc((curr = allocator.alloc<RefFunc>())->cast<RefFunc>());
@@ -3776,15 +3845,12 @@ BinaryConsts::ASTNodes WasmBinaryBuilder::readExpression(Expression*& curr) {
       visitMemoryGrow(grow);
       break;
     }
-    case BinaryConsts::CallRefUnannotated:
-      visitCallRef((curr = allocator.alloc<CallRef>())->cast<CallRef>());
-      break;
     case BinaryConsts::CallRef:
     case BinaryConsts::RetCallRef: {
       auto call = allocator.alloc<CallRef>();
       call->isReturn = code == BinaryConsts::RetCallRef;
       curr = call;
-      visitCallRef(call, getTypeByIndex(getU32LEB()));
+      visitCallRef(call);
       break;
     }
     case BinaryConsts::AtomicPrefix: {
@@ -3906,6 +3972,9 @@ BinaryConsts::ASTNodes WasmBinaryBuilder::readExpression(Expression*& curr) {
       if (maybeVisitArrayNew(curr, opcode)) {
         break;
       }
+      if (maybeVisitArrayNewSeg(curr, opcode)) {
+        break;
+      }
       if (maybeVisitArrayInit(curr, opcode)) {
         break;
       }
@@ -3961,15 +4030,18 @@ BinaryConsts::ASTNodes WasmBinaryBuilder::readExpression(Expression*& curr) {
         break;
       }
       if (opcode == BinaryConsts::RefIsFunc ||
-          opcode == BinaryConsts::RefIsData ||
           opcode == BinaryConsts::RefIsI31) {
-        visitRefIs((curr = allocator.alloc<RefIs>())->cast<RefIs>(), opcode);
+        visitRefIs((curr = allocator.alloc<RefTest>())->cast<RefTest>(),
+                   opcode);
         break;
       }
       if (opcode == BinaryConsts::RefAsFunc ||
-          opcode == BinaryConsts::RefAsData ||
-          opcode == BinaryConsts::RefAsI31 ||
-          opcode == BinaryConsts::ExternInternalize ||
+          opcode == BinaryConsts::RefAsI31) {
+        visitRefAsCast((curr = allocator.alloc<RefCast>())->cast<RefCast>(),
+                       opcode);
+        break;
+      }
+      if (opcode == BinaryConsts::ExternInternalize ||
           opcode == BinaryConsts::ExternExternalize) {
         visitRefAs((curr = allocator.alloc<RefAs>())->cast<RefAs>(), opcode);
         break;
@@ -6525,28 +6597,28 @@ void WasmBinaryBuilder::visitDrop(Drop* curr) {
 
 void WasmBinaryBuilder::visitRefNull(RefNull* curr) {
   BYN_TRACE("zz node: RefNull\n");
-  curr->finalize(getHeapType());
+  curr->finalize(getHeapType().getBottom());
 }
 
-void WasmBinaryBuilder::visitRefIs(RefIs* curr, uint8_t code) {
+void WasmBinaryBuilder::visitRefIsNull(RefIsNull* curr) {
+  BYN_TRACE("zz node: RefIsNull\n");
+  curr->value = popNonVoidExpression();
+  curr->finalize();
+}
+
+void WasmBinaryBuilder::visitRefIs(RefTest* curr, uint8_t code) {
   BYN_TRACE("zz node: RefIs\n");
   switch (code) {
-    case BinaryConsts::RefIsNull:
-      curr->op = RefIsNull;
-      break;
     case BinaryConsts::RefIsFunc:
-      curr->op = RefIsFunc;
-      break;
-    case BinaryConsts::RefIsData:
-      curr->op = RefIsData;
+      curr->castType = Type(HeapType::func, NonNullable);
       break;
     case BinaryConsts::RefIsI31:
-      curr->op = RefIsI31;
+      curr->castType = Type(HeapType::i31, NonNullable);
       break;
     default:
       WASM_UNREACHABLE("invalid code for ref.is_*");
   }
-  curr->value = popNonVoidExpression();
+  curr->ref = popNonVoidExpression();
   curr->finalize();
 }
 
@@ -6773,34 +6845,18 @@ void WasmBinaryBuilder::visitRethrow(Rethrow* curr) {
   // This special target is valid only for delegates
   if (curr->target == DELEGATE_CALLER_TARGET) {
     throwError(std::string("rethrow target cannot use internal name ") +
-               DELEGATE_CALLER_TARGET.str);
+               DELEGATE_CALLER_TARGET.toString());
   }
   curr->finalize();
 }
 
-void WasmBinaryBuilder::visitCallRef(CallRef* curr,
-                                     std::optional<HeapType> maybeType) {
+void WasmBinaryBuilder::visitCallRef(CallRef* curr) {
   BYN_TRACE("zz node: CallRef\n");
   curr->target = popNonVoidExpression();
-  HeapType heapType;
-  if (maybeType) {
-    heapType = *maybeType;
-    if (!Type::isSubType(curr->target->type, Type(heapType, Nullable))) {
-      throwError("Call target has invalid type: " +
-                 curr->target->type.toString());
-    }
-  } else {
-    auto type = curr->target->type;
-    if (type == Type::unreachable) {
-      // If our input is unreachable, then we cannot even find out how many
-      // inputs we have, and just set ourselves to unreachable as well.
-      curr->finalize(type);
-      return;
-    }
-    if (!type.isRef()) {
-      throwError("Non-ref type for a call_ref: " + type.toString());
-    }
-    heapType = type.getHeapType();
+  HeapType heapType = getTypeByIndex(getU32LEB());
+  if (!Type::isSubType(curr->target->type, Type(heapType, Nullable))) {
+    throwError("Call target has invalid type: " +
+               curr->target->type.toString());
   }
   if (!heapType.isSignature()) {
     throwError("Invalid reference type for a call_ref: " + heapType.toString());
@@ -6846,29 +6902,61 @@ bool WasmBinaryBuilder::maybeVisitI31Get(Expression*& out, uint32_t code) {
 }
 
 bool WasmBinaryBuilder::maybeVisitRefTest(Expression*& out, uint32_t code) {
-  if (code == BinaryConsts::RefTestStatic) {
-    auto intendedType = getIndexedHeapType();
+  if (code == BinaryConsts::RefTestStatic || code == BinaryConsts::RefTest ||
+      code == BinaryConsts::RefTestNull) {
+    bool legacy = code == BinaryConsts::RefTestStatic;
+    auto castType = legacy ? getIndexedHeapType() : getHeapType();
+    auto nullability =
+      (code == BinaryConsts::RefTestNull) ? Nullable : NonNullable;
     auto* ref = popNonVoidExpression();
-    out = Builder(wasm).makeRefTest(ref, intendedType);
+    out = Builder(wasm).makeRefTest(ref, Type(castType, nullability));
     return true;
   }
   return false;
 }
 
+void WasmBinaryBuilder::visitRefAsCast(RefCast* curr, uint32_t code) {
+  // TODO: These instructions are deprecated. Remove them.
+  switch (code) {
+    case BinaryConsts::RefAsFunc:
+      curr->type = Type(HeapType::func, NonNullable);
+      break;
+    case BinaryConsts::RefAsI31:
+      curr->type = Type(HeapType::i31, NonNullable);
+      break;
+    default:
+      WASM_UNREACHABLE("unexpected ref.as*");
+  }
+  curr->ref = popNonVoidExpression();
+  curr->safety = RefCast::Safe;
+  curr->finalize();
+}
+
 bool WasmBinaryBuilder::maybeVisitRefCast(Expression*& out, uint32_t code) {
-  if (code == BinaryConsts::RefCastStatic ||
-      code == BinaryConsts::RefCastNopStatic) {
-    auto intendedType = getIndexedHeapType();
+  if (code == BinaryConsts::RefCastStatic || code == BinaryConsts::RefCast ||
+      code == BinaryConsts::RefCastNull || code == BinaryConsts::RefCastNop) {
+    bool legacy =
+      code == BinaryConsts::RefCastStatic || code == BinaryConsts::RefCastNop;
+    auto heapType = legacy ? getIndexedHeapType() : getHeapType();
     auto* ref = popNonVoidExpression();
+    Nullability nullability;
+    if (legacy) {
+      // Legacy polymorphic behavior.
+      nullability = ref->type.getNullability();
+    } else {
+      nullability = code == BinaryConsts::RefCast ? NonNullable : Nullable;
+    }
     auto safety =
-      code == BinaryConsts::RefCastNopStatic ? RefCast::Unsafe : RefCast::Safe;
-    out = Builder(wasm).makeRefCast(ref, intendedType, safety);
+      code == BinaryConsts::RefCastNop ? RefCast::Unsafe : RefCast::Safe;
+    auto type = Type(heapType, nullability);
+    out = Builder(wasm).makeRefCast(ref, type, safety);
     return true;
   }
   return false;
 }
 
 bool WasmBinaryBuilder::maybeVisitBrOn(Expression*& out, uint32_t code) {
+  Type castType = Type::none;
   BrOnOp op;
   switch (code) {
     case BinaryConsts::BrOnNull:
@@ -6878,42 +6966,47 @@ bool WasmBinaryBuilder::maybeVisitBrOn(Expression*& out, uint32_t code) {
       op = BrOnNonNull;
       break;
     case BinaryConsts::BrOnCastStatic:
+    case BinaryConsts::BrOnCast:
+    case BinaryConsts::BrOnCastNull:
       op = BrOnCast;
       break;
     case BinaryConsts::BrOnCastStaticFail:
+    case BinaryConsts::BrOnCastFail:
+    case BinaryConsts::BrOnCastFailNull:
       op = BrOnCastFail;
       break;
     case BinaryConsts::BrOnFunc:
-      op = BrOnFunc;
+      op = BrOnCast;
+      castType = Type(HeapType::func, NonNullable);
       break;
     case BinaryConsts::BrOnNonFunc:
-      op = BrOnNonFunc;
-      break;
-    case BinaryConsts::BrOnData:
-      op = BrOnData;
-      break;
-    case BinaryConsts::BrOnNonData:
-      op = BrOnNonData;
+      op = BrOnCastFail;
+      castType = Type(HeapType::func, NonNullable);
       break;
     case BinaryConsts::BrOnI31:
-      op = BrOnI31;
+      op = BrOnCast;
+      castType = Type(HeapType::i31, NonNullable);
       break;
     case BinaryConsts::BrOnNonI31:
-      op = BrOnNonI31;
+      op = BrOnCastFail;
+      castType = Type(HeapType::i31, NonNullable);
       break;
     default:
       return false;
   }
   auto name = getBreakTarget(getU32LEB()).name;
-  if (code == BinaryConsts::BrOnCastStatic ||
-      code == BinaryConsts::BrOnCastStaticFail) {
-    auto intendedType = getIndexedHeapType();
-    auto* ref = popNonVoidExpression();
-    out = Builder(wasm).makeBrOn(op, name, ref, intendedType);
-    return true;
+  if (castType == Type::none && (op == BrOnCast || op == BrOnCastFail)) {
+    auto nullability = (code == BinaryConsts::BrOnCastNull ||
+                        code == BinaryConsts::BrOnCastFailNull)
+                         ? Nullable
+                         : NonNullable;
+    bool legacy = code == BinaryConsts::BrOnCastStatic ||
+                  code == BinaryConsts::BrOnCastStaticFail;
+    auto type = legacy ? getIndexedHeapType() : getHeapType();
+    castType = Type(type, nullability);
   }
   auto* ref = popNonVoidExpression();
-  out = ValidatingBuilder(wasm, pos).validateAndMakeBrOn(op, name, ref);
+  out = Builder(wasm).makeBrOn(op, name, ref, castType);
   return true;
 }
 
@@ -6936,28 +7029,29 @@ bool WasmBinaryBuilder::maybeVisitStructNew(Expression*& out, uint32_t code) {
 }
 
 bool WasmBinaryBuilder::maybeVisitStructGet(Expression*& out, uint32_t code) {
-  StructGet* curr;
+  bool signed_ = false;
   switch (code) {
     case BinaryConsts::StructGet:
-      curr = allocator.alloc<StructGet>();
+    case BinaryConsts::StructGetU:
       break;
     case BinaryConsts::StructGetS:
-      curr = allocator.alloc<StructGet>();
-      curr->signed_ = true;
-      break;
-    case BinaryConsts::StructGetU:
-      curr = allocator.alloc<StructGet>();
-      curr->signed_ = false;
+      signed_ = true;
       break;
     default:
       return false;
   }
   auto heapType = getIndexedHeapType();
-  curr->index = getU32LEB();
-  curr->ref = popNonVoidExpression();
-  validateHeapTypeUsingChild(curr->ref, heapType);
-  curr->finalize();
-  out = curr;
+  if (!heapType.isStruct()) {
+    throwError("Expected struct heaptype");
+  }
+  auto index = getU32LEB();
+  if (index >= heapType.getStruct().fields.size()) {
+    throwError("Struct field index out of bounds");
+  }
+  auto type = heapType.getStruct().fields[index].type;
+  auto ref = popNonVoidExpression();
+  validateHeapTypeUsingChild(ref, heapType);
+  out = Builder(wasm).makeStructGet(index, ref, type, signed_);
   return true;
 }
 
@@ -6990,6 +7084,20 @@ bool WasmBinaryBuilder::maybeVisitArrayNew(Expression*& out, uint32_t code) {
   return false;
 }
 
+bool WasmBinaryBuilder::maybeVisitArrayNewSeg(Expression*& out, uint32_t code) {
+  if (code == BinaryConsts::ArrayNewData ||
+      code == BinaryConsts::ArrayNewElem) {
+    auto op = code == BinaryConsts::ArrayNewData ? NewData : NewElem;
+    auto heapType = getIndexedHeapType();
+    auto seg = getU32LEB();
+    auto* size = popNonVoidExpression();
+    auto* offset = popNonVoidExpression();
+    out = Builder(wasm).makeArrayNewSeg(op, heapType, seg, offset, size);
+    return true;
+  }
+  return false;
+}
+
 bool WasmBinaryBuilder::maybeVisitArrayInit(Expression*& out, uint32_t code) {
   if (code == BinaryConsts::ArrayInitStatic) {
     auto heapType = getIndexedHeapType();
@@ -7017,10 +7125,14 @@ bool WasmBinaryBuilder::maybeVisitArrayGet(Expression*& out, uint32_t code) {
       return false;
   }
   auto heapType = getIndexedHeapType();
+  if (!heapType.isArray()) {
+    throwError("Expected array heaptype");
+  }
+  auto type = heapType.getArray().element.type;
   auto* index = popNonVoidExpression();
   auto* ref = popNonVoidExpression();
   validateHeapTypeUsingChild(ref, heapType);
-  out = Builder(wasm).makeArrayGet(ref, index, signed_);
+  out = Builder(wasm).makeArrayGet(ref, index, type, signed_);
   return true;
 }
 
@@ -7038,12 +7150,13 @@ bool WasmBinaryBuilder::maybeVisitArraySet(Expression*& out, uint32_t code) {
 }
 
 bool WasmBinaryBuilder::maybeVisitArrayLen(Expression*& out, uint32_t code) {
-  if (code != BinaryConsts::ArrayLen) {
+  if (code == BinaryConsts::ArrayLenAnnotated) {
+    // Ignore the type annotation and don't bother validating it.
+    getU32LEB();
+  } else if (code != BinaryConsts::ArrayLen) {
     return false;
   }
-  auto heapType = getIndexedHeapType();
   auto* ref = popNonVoidExpression();
-  validateHeapTypeUsingChild(ref, heapType);
   out = Builder(wasm).makeArrayLen(ref);
   return true;
 }
@@ -7071,7 +7184,13 @@ bool WasmBinaryBuilder::maybeVisitStringNew(Expression*& out, uint32_t code) {
   Expression* length = nullptr;
   Expression* start = nullptr;
   Expression* end = nullptr;
-  if (code == BinaryConsts::StringNewWTF8) {
+  bool try_ = false;
+  if (code == BinaryConsts::StringNewWTF8 ||
+      code == BinaryConsts::StringNewUTF8Try) {
+    if (code == BinaryConsts::StringNewUTF8Try) {
+      try_ = true;
+    }
+    // FIXME: the memory index should be an LEB like all other places
     if (getInt8() != 0) {
       throwError("Unexpected nonzero memory index");
     }
@@ -7096,7 +7215,11 @@ bool WasmBinaryBuilder::maybeVisitStringNew(Expression*& out, uint32_t code) {
     }
     op = StringNewWTF16;
     length = popNonVoidExpression();
-  } else if (code == BinaryConsts::StringNewWTF8Array) {
+  } else if (code == BinaryConsts::StringNewWTF8Array ||
+             code == BinaryConsts::StringNewUTF8ArrayTry) {
+    if (code == BinaryConsts::StringNewUTF8ArrayTry) {
+      try_ = true;
+    }
     auto policy = getU32LEB();
     switch (policy) {
       case BinaryConsts::StringPolicy::UTF8:
@@ -7117,14 +7240,16 @@ bool WasmBinaryBuilder::maybeVisitStringNew(Expression*& out, uint32_t code) {
     op = StringNewWTF16Array;
     end = popNonVoidExpression();
     start = popNonVoidExpression();
+  } else if (code == BinaryConsts::StringFromCodePoint) {
+    op = StringNewFromCodePoint;
   } else {
     return false;
   }
   auto* ptr = popNonVoidExpression();
   if (length) {
-    out = Builder(wasm).makeStringNew(op, ptr, length);
+    out = Builder(wasm).makeStringNew(op, ptr, length, try_);
   } else {
-    out = Builder(wasm).makeStringNew(op, ptr, start, end);
+    out = Builder(wasm).makeStringNew(op, ptr, start, end, try_);
   }
   return true;
 }
@@ -7232,12 +7357,17 @@ bool WasmBinaryBuilder::maybeVisitStringConcat(Expression*& out,
 }
 
 bool WasmBinaryBuilder::maybeVisitStringEq(Expression*& out, uint32_t code) {
-  if (code != BinaryConsts::StringEq) {
+  StringEqOp op;
+  if (code == BinaryConsts::StringEq) {
+    op = StringEqEqual;
+  } else if (code == BinaryConsts::StringCompare) {
+    op = StringEqCompare;
+  } else {
     return false;
   }
   auto* right = popNonVoidExpression();
   auto* left = popNonVoidExpression();
-  out = Builder(wasm).makeStringEq(left, right);
+  out = Builder(wasm).makeStringEq(op, left, right);
   return true;
 }
 
@@ -7339,15 +7469,6 @@ void WasmBinaryBuilder::visitRefAs(RefAs* curr, uint8_t code) {
   switch (code) {
     case BinaryConsts::RefAsNonNull:
       curr->op = RefAsNonNull;
-      break;
-    case BinaryConsts::RefAsFunc:
-      curr->op = RefAsFunc;
-      break;
-    case BinaryConsts::RefAsData:
-      curr->op = RefAsData;
-      break;
-    case BinaryConsts::RefAsI31:
-      curr->op = RefAsI31;
       break;
     case BinaryConsts::ExternInternalize:
       curr->op = ExternInternalize;

@@ -61,6 +61,7 @@ struct ValidationInfo {
   bool validateWeb;
   bool validateGlobally;
   bool quiet;
+  bool closedWorld;
 
   std::atomic<bool> valid;
 
@@ -426,7 +427,7 @@ public:
   void visitMemorySize(MemorySize* curr);
   void visitMemoryGrow(MemoryGrow* curr);
   void visitRefNull(RefNull* curr);
-  void visitRefIs(RefIs* curr);
+  void visitRefIsNull(RefIsNull* curr);
   void visitRefAs(RefAs* curr);
   void visitRefFunc(RefFunc* curr);
   void visitRefEq(RefEq* curr);
@@ -451,6 +452,7 @@ public:
   void visitStructGet(StructGet* curr);
   void visitStructSet(StructSet* curr);
   void visitArrayNew(ArrayNew* curr);
+  void visitArrayNewSeg(ArrayNewSeg* curr);
   void visitArrayInit(ArrayInit* curr);
   void visitArrayGet(ArrayGet* curr);
   void visitArraySet(ArraySet* curr);
@@ -504,7 +506,7 @@ private:
   template<typename T> void validateReturnCall(T* curr) {
     shouldBeTrue(!curr->isReturn || getModule()->features.hasTailCall(),
                  curr,
-                 "return_call* requires tail calls to be enabled");
+                 "return_call* requires tail calls [--enable-tail-call]");
   }
 
   // |printable| is the expression to print in case of an error. That may differ
@@ -612,9 +614,10 @@ void FunctionValidator::validatePoppyExpression(Expression* curr) {
 
 void FunctionValidator::visitBlock(Block* curr) {
   if (!getModule()->features.hasMultivalue()) {
-    shouldBeTrue(!curr->type.isTuple(),
-                 curr,
-                 "Multivalue block type (multivalue is not enabled)");
+    shouldBeTrue(
+      !curr->type.isTuple(),
+      curr,
+      "Multivalue block type require multivalue [--enable-multivalue]");
   }
   // if we are break'ed to, then the value must be right for us
   if (curr->name.is()) {
@@ -1003,7 +1006,7 @@ void FunctionValidator::visitLoad(Load* curr) {
   if (curr->isAtomic) {
     shouldBeTrue(getModule()->features.hasAtomics(),
                  curr,
-                 "Atomic operation (atomics are disabled)");
+                 "Atomic operations require threads [--enable-threads]");
     shouldBeTrue(curr->type == Type::i32 || curr->type == Type::i64 ||
                    curr->type == Type::unreachable,
                  curr,
@@ -1012,7 +1015,7 @@ void FunctionValidator::visitLoad(Load* curr) {
   if (curr->type == Type::v128) {
     shouldBeTrue(getModule()->features.hasSIMD(),
                  curr,
-                 "SIMD operation (SIMD is disabled)");
+                 "SIMD operations require SIMD [--enable-simd]");
   }
   validateMemBytes(curr->bytes, curr->type, curr);
   validateAlignment(curr->align, curr->type, curr->bytes, curr->isAtomic, curr);
@@ -1034,7 +1037,7 @@ void FunctionValidator::visitStore(Store* curr) {
   if (curr->isAtomic) {
     shouldBeTrue(getModule()->features.hasAtomics(),
                  curr,
-                 "Atomic operation (atomics are disabled)");
+                 "Atomic operations require threads [--enable-threads]");
     shouldBeTrue(curr->valueType == Type::i32 || curr->valueType == Type::i64 ||
                    curr->valueType == Type::unreachable,
                  curr,
@@ -1043,7 +1046,7 @@ void FunctionValidator::visitStore(Store* curr) {
   if (curr->valueType == Type::v128) {
     shouldBeTrue(getModule()->features.hasSIMD(),
                  curr,
-                 "SIMD operation (SIMD is disabled)");
+                 "SIMD operations require SIMD [--enable-simd]");
   }
   validateMemBytes(curr->bytes, curr->valueType, curr);
   validateAlignment(
@@ -1070,7 +1073,7 @@ void FunctionValidator::visitAtomicRMW(AtomicRMW* curr) {
   shouldBeTrue(!!memory, curr, "memory.atomicRMW memory must exist");
   shouldBeTrue(getModule()->features.hasAtomics(),
                curr,
-               "Atomic operation (atomics are disabled)");
+               "Atomic operations require threads [--enable-threads]");
   validateMemBytes(curr->bytes, curr->type, curr);
   shouldBeEqualOrFirstIsUnreachable(
     curr->ptr->type,
@@ -1090,7 +1093,7 @@ void FunctionValidator::visitAtomicCmpxchg(AtomicCmpxchg* curr) {
   shouldBeTrue(!!memory, curr, "memory.atomicCmpxchg memory must exist");
   shouldBeTrue(getModule()->features.hasAtomics(),
                curr,
-               "Atomic operation (atomics are disabled)");
+               "Atomic operations require threads [--enable-threads]");
   validateMemBytes(curr->bytes, curr->type, curr);
   shouldBeEqualOrFirstIsUnreachable(
     curr->ptr->type,
@@ -1123,7 +1126,7 @@ void FunctionValidator::visitAtomicWait(AtomicWait* curr) {
   shouldBeTrue(!!memory, curr, "memory.atomicWait memory must exist");
   shouldBeTrue(getModule()->features.hasAtomics(),
                curr,
-               "Atomic operation (atomics are disabled)");
+               "Atomic operations require threads [--enable-threads]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::i32), curr, "AtomicWait must have type i32");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1149,7 +1152,7 @@ void FunctionValidator::visitAtomicNotify(AtomicNotify* curr) {
   shouldBeTrue(!!memory, curr, "memory.atomicNotify memory must exist");
   shouldBeTrue(getModule()->features.hasAtomics(),
                curr,
-               "Atomic operation (atomics are disabled)");
+               "Atomic operations require threads [--enable-threads]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::i32), curr, "AtomicNotify must have type i32");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1169,7 +1172,7 @@ void FunctionValidator::visitAtomicFence(AtomicFence* curr) {
     getModule()->memories.empty(), curr, "Memory operations require a memory");
   shouldBeTrue(getModule()->features.hasAtomics(),
                curr,
-               "Atomic operation (atomics are disabled)");
+               "Atomic operations require threads [--enable-threads]");
   shouldBeTrue(curr->order == 0,
                curr,
                "Currently only sequentially consistent atomics are supported, "
@@ -1177,8 +1180,9 @@ void FunctionValidator::visitAtomicFence(AtomicFence* curr) {
 }
 
 void FunctionValidator::visitSIMDExtract(SIMDExtract* curr) {
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   shouldBeEqualOrFirstIsUnreachable(curr->vec->type,
                                     Type(Type::v128),
                                     curr,
@@ -1222,8 +1226,9 @@ void FunctionValidator::visitSIMDExtract(SIMDExtract* curr) {
 }
 
 void FunctionValidator::visitSIMDReplace(SIMDReplace* curr) {
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::v128), curr, "replace_lane must have type v128");
   shouldBeEqualOrFirstIsUnreachable(curr->vec->type,
@@ -1264,8 +1269,9 @@ void FunctionValidator::visitSIMDReplace(SIMDReplace* curr) {
 }
 
 void FunctionValidator::visitSIMDShuffle(SIMDShuffle* curr) {
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::v128), curr, "i8x16.shuffle must have type v128");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1278,8 +1284,9 @@ void FunctionValidator::visitSIMDShuffle(SIMDShuffle* curr) {
 }
 
 void FunctionValidator::visitSIMDTernary(SIMDTernary* curr) {
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::v128), curr, "SIMD ternary must have type v128");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1291,8 +1298,9 @@ void FunctionValidator::visitSIMDTernary(SIMDTernary* curr) {
 }
 
 void FunctionValidator::visitSIMDShift(SIMDShift* curr) {
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::v128), curr, "vector shift must have type v128");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1306,8 +1314,9 @@ void FunctionValidator::visitSIMDShift(SIMDShift* curr) {
 void FunctionValidator::visitSIMDLoad(SIMDLoad* curr) {
   auto* memory = getModule()->getMemoryOrNull(curr->memory);
   shouldBeTrue(!!memory, curr, "memory.SIMDLoad memory must exist");
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::v128), curr, "load_splat must have type v128");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1341,8 +1350,9 @@ void FunctionValidator::visitSIMDLoad(SIMDLoad* curr) {
 void FunctionValidator::visitSIMDLoadStoreLane(SIMDLoadStoreLane* curr) {
   auto* memory = getModule()->getMemoryOrNull(curr->memory);
   shouldBeTrue(!!memory, curr, "memory.SIMDLoadStoreLane memory must exist");
-  shouldBeTrue(
-    getModule()->features.hasSIMD(), curr, "SIMD operation (SIMD is disabled)");
+  shouldBeTrue(getModule()->features.hasSIMD(),
+               curr,
+               "SIMD operations require SIMD [--enable-simd]");
   if (curr->isLoad()) {
     shouldBeEqualOrFirstIsUnreachable(
       curr->type, Type(Type::v128), curr, "loadX_lane must have type v128");
@@ -1392,9 +1402,10 @@ void FunctionValidator::visitSIMDLoadStoreLane(SIMDLoadStoreLane* curr) {
 }
 
 void FunctionValidator::visitMemoryInit(MemoryInit* curr) {
-  shouldBeTrue(getModule()->features.hasBulkMemory(),
-               curr,
-               "Bulk memory operation (bulk memory is disabled)");
+  shouldBeTrue(
+    getModule()->features.hasBulkMemory(),
+    curr,
+    "Bulk memory operations require bulk memory [--enable-bulk-memory]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::none), curr, "memory.init must have type none");
   shouldBeEqualOrFirstIsUnreachable(
@@ -1418,9 +1429,10 @@ void FunctionValidator::visitMemoryInit(MemoryInit* curr) {
 }
 
 void FunctionValidator::visitDataDrop(DataDrop* curr) {
-  shouldBeTrue(getModule()->features.hasBulkMemory(),
-               curr,
-               "Bulk memory operation (bulk memory is disabled)");
+  shouldBeTrue(
+    getModule()->features.hasBulkMemory(),
+    curr,
+    "Bulk memory operations require bulk memory [--enable-bulk-memory]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::none), curr, "data.drop must have type none");
   if (!shouldBeFalse(getModule()->memories.empty(),
@@ -1434,9 +1446,10 @@ void FunctionValidator::visitDataDrop(DataDrop* curr) {
 }
 
 void FunctionValidator::visitMemoryCopy(MemoryCopy* curr) {
-  shouldBeTrue(getModule()->features.hasBulkMemory(),
-               curr,
-               "Bulk memory operation (bulk memory is disabled)");
+  shouldBeTrue(
+    getModule()->features.hasBulkMemory(),
+    curr,
+    "Bulk memory operations require bulk memory [--enable-bulk-memory]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::none), curr, "memory.copy must have type none");
   auto* destMemory = getModule()->getMemoryOrNull(curr->destMemory);
@@ -1466,9 +1479,10 @@ void FunctionValidator::visitMemoryCopy(MemoryCopy* curr) {
 }
 
 void FunctionValidator::visitMemoryFill(MemoryFill* curr) {
-  shouldBeTrue(getModule()->features.hasBulkMemory(),
-               curr,
-               "Bulk memory operation (bulk memory is disabled)");
+  shouldBeTrue(
+    getModule()->features.hasBulkMemory(),
+    curr,
+    "Bulk memory operations require bulk memory [--enable-bulk-memory]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::none), curr, "memory.fill must have type none");
   shouldBeEqualOrFirstIsUnreachable(
@@ -2109,24 +2123,24 @@ void FunctionValidator::visitRefNull(RefNull* curr) {
   // features are enabled.
   shouldBeTrue(!getFunction() || getModule()->features.hasReferenceTypes(),
                curr,
-               "ref.null requires reference-types to be enabled");
+               "ref.null requires reference-types [--enable-reference-types]");
+  if (!shouldBeTrue(
+        curr->type.isNullable(), curr, "ref.null types must be nullable")) {
+    return;
+  }
   shouldBeTrue(
-    curr->type.isNullable(), curr, "ref.null types must be nullable");
-
-  // The type of the null must also be valid for the features.
-  shouldBeTrue(curr->type.getFeatures() <= getModule()->features,
-               curr->type,
-               "ref.null type should be allowed");
+    curr->type.isNull(), curr, "ref.null must have a bottom heap type");
 }
 
-void FunctionValidator::visitRefIs(RefIs* curr) {
-  shouldBeTrue(getModule()->features.hasReferenceTypes(),
-               curr,
-               "ref.is_* requires reference-types to be enabled");
+void FunctionValidator::visitRefIsNull(RefIsNull* curr) {
+  shouldBeTrue(
+    getModule()->features.hasReferenceTypes(),
+    curr,
+    "ref.is_null requires reference-types [--enable-reference-types]");
   shouldBeTrue(curr->value->type == Type::unreachable ||
                  curr->value->type.isRef(),
                curr->value,
-               "ref.is_*'s argument should be a reference type");
+               "ref.is_null's argument should be a reference type");
 }
 
 void FunctionValidator::visitRefAs(RefAs* curr) {
@@ -2137,7 +2151,7 @@ void FunctionValidator::visitRefAs(RefAs* curr) {
     case ExternInternalize: {
       shouldBeTrue(getModule()->features.hasGC(),
                    curr,
-                   "extern.internalize requries GC to be enabled");
+                   "extern.internalize requries GC [--enable-gc]");
       if (curr->type == Type::unreachable) {
         return;
       }
@@ -2150,7 +2164,7 @@ void FunctionValidator::visitRefAs(RefAs* curr) {
     case ExternExternalize: {
       shouldBeTrue(getModule()->features.hasGC(),
                    curr,
-                   "extern.externalize requries GC to be enabled");
+                   "extern.externalize requries GC [--enable-gc]");
       if (curr->type == Type::unreachable) {
         return;
       }
@@ -2169,7 +2183,7 @@ void FunctionValidator::visitRefFunc(RefFunc* curr) {
   // features are enabled.
   shouldBeTrue(!getFunction() || getModule()->features.hasReferenceTypes(),
                curr,
-               "ref.func requires reference-types to be enabled");
+               "ref.func requires reference-types [--enable-reference-types]");
   if (!info.validateGlobally) {
     return;
   }
@@ -2193,7 +2207,7 @@ void FunctionValidator::visitRefFunc(RefFunc* curr) {
 void FunctionValidator::visitRefEq(RefEq* curr) {
   Type eqref = Type(HeapType::eq, Nullable);
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "ref.eq requires gc to be enabled");
+    getModule()->features.hasGC(), curr, "ref.eq requires gc [--enable-gc]");
   shouldBeSubType(curr->left->type,
                   eqref,
                   curr->left,
@@ -2207,7 +2221,7 @@ void FunctionValidator::visitRefEq(RefEq* curr) {
 void FunctionValidator::visitTableGet(TableGet* curr) {
   shouldBeTrue(getModule()->features.hasReferenceTypes(),
                curr,
-               "table.get requires reference types to be enabled");
+               "table.get requires reference types [--enable-reference-types]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->index->type, Type(Type::i32), curr, "table.get index must be an i32");
   auto* table = getModule()->getTableOrNull(curr->table);
@@ -2221,7 +2235,7 @@ void FunctionValidator::visitTableGet(TableGet* curr) {
 void FunctionValidator::visitTableSet(TableSet* curr) {
   shouldBeTrue(getModule()->features.hasReferenceTypes(),
                curr,
-               "table.set requires reference types to be enabled");
+               "table.set requires reference types [--enable-reference-types]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->index->type, Type(Type::i32), curr, "table.set index must be an i32");
   auto* table = getModule()->getTableOrNull(curr->table);
@@ -2235,17 +2249,19 @@ void FunctionValidator::visitTableSet(TableSet* curr) {
 }
 
 void FunctionValidator::visitTableSize(TableSize* curr) {
-  shouldBeTrue(getModule()->features.hasReferenceTypes(),
-               curr,
-               "table.size requires reference types to be enabled");
+  shouldBeTrue(
+    getModule()->features.hasReferenceTypes(),
+    curr,
+    "table.size requires reference types [--enable-reference-types]");
   auto* table = getModule()->getTableOrNull(curr->table);
   shouldBeTrue(!!table, curr, "table.size table must exist");
 }
 
 void FunctionValidator::visitTableGrow(TableGrow* curr) {
-  shouldBeTrue(getModule()->features.hasReferenceTypes(),
-               curr,
-               "table.grow requires reference types to be enabled");
+  shouldBeTrue(
+    getModule()->features.hasReferenceTypes(),
+    curr,
+    "table.grow requires reference types [--enable-reference-types]");
   auto* table = getModule()->getTableOrNull(curr->table);
   if (shouldBeTrue(!!table, curr, "table.grow table must exist") &&
       curr->type != Type::unreachable) {
@@ -2277,7 +2293,7 @@ void FunctionValidator::noteRethrow(Name name, Expression* curr) {
 void FunctionValidator::visitTry(Try* curr) {
   shouldBeTrue(getModule()->features.hasExceptionHandling(),
                curr,
-               "try requires exception-handling to be enabled");
+               "try requires exception-handling [--enable-exception-handling]");
   if (curr->name.is()) {
     noteLabelName(curr->name);
   }
@@ -2362,9 +2378,10 @@ void FunctionValidator::visitTry(Try* curr) {
 }
 
 void FunctionValidator::visitThrow(Throw* curr) {
-  shouldBeTrue(getModule()->features.hasExceptionHandling(),
-               curr,
-               "throw requires exception-handling to be enabled");
+  shouldBeTrue(
+    getModule()->features.hasExceptionHandling(),
+    curr,
+    "throw requires exception-handling [--enable-exception-handling]");
   shouldBeEqual(curr->type,
                 Type(Type::unreachable),
                 curr,
@@ -2395,9 +2412,10 @@ void FunctionValidator::visitThrow(Throw* curr) {
 }
 
 void FunctionValidator::visitRethrow(Rethrow* curr) {
-  shouldBeTrue(getModule()->features.hasExceptionHandling(),
-               curr,
-               "rethrow requires exception-handling to be enabled");
+  shouldBeTrue(
+    getModule()->features.hasExceptionHandling(),
+    curr,
+    "rethrow requires exception-handling [--enable-exception-handling]");
   shouldBeEqual(curr->type,
                 Type(Type::unreachable),
                 curr,
@@ -2453,19 +2471,22 @@ void FunctionValidator::visitTupleExtract(TupleExtract* curr) {
 void FunctionValidator::visitCallRef(CallRef* curr) {
   validateReturnCall(curr);
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "call_ref requires gc to be enabled");
-  if (curr->target->type != Type::unreachable) {
-    if (shouldBeTrue(curr->target->type.isFunction(),
-                     curr,
-                     "call_ref target must be a function reference")) {
-      validateCallParamsAndResult(curr, curr->target->type.getHeapType());
-    }
+    getModule()->features.hasGC(), curr, "call_ref requires gc [--enable-gc]");
+  if (curr->target->type == Type::unreachable ||
+      (curr->target->type.isRef() &&
+       curr->target->type.getHeapType() == HeapType::nofunc)) {
+    return;
+  }
+  if (shouldBeTrue(curr->target->type.isFunction(),
+                   curr,
+                   "call_ref target must be a function reference")) {
+    validateCallParamsAndResult(curr, curr->target->type.getHeapType());
   }
 }
 
 void FunctionValidator::visitI31New(I31New* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "i31.new requires gc to be enabled");
+    getModule()->features.hasGC(), curr, "i31.new requires gc [--enable-gc]");
   shouldBeSubType(curr->value->type,
                   Type::i32,
                   curr->value,
@@ -2475,7 +2496,7 @@ void FunctionValidator::visitI31New(I31New* curr) {
 void FunctionValidator::visitI31Get(I31Get* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "i31.get_s/u requires gc to be enabled");
+               "i31.get_s/u requires gc [--enable-gc]");
   shouldBeSubType(curr->i31->type,
                   Type(HeapType::i31, Nullable),
                   curr->i31,
@@ -2484,53 +2505,69 @@ void FunctionValidator::visitI31Get(I31Get* curr) {
 
 void FunctionValidator::visitRefTest(RefTest* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "ref.test requires gc to be enabled");
-  if (curr->ref->type != Type::unreachable) {
-    shouldBeTrue(
-      curr->ref->type.isRef(), curr, "ref.test ref must have ref type");
+    getModule()->features.hasGC(), curr, "ref.test requires gc [--enable-gc]");
+  if (curr->ref->type == Type::unreachable) {
+    return;
   }
-  shouldBeUnequal(curr->intendedType,
-                  HeapType(),
-                  curr,
-                  "static ref.test must set intendedType field");
-  shouldBeTrue(
-    !curr->intendedType.isBasic(), curr, "ref.test must test a non-basic");
+  if (!shouldBeTrue(
+        curr->ref->type.isRef(), curr, "ref.test ref must have ref type")) {
+    return;
+  }
+  shouldBeEqual(
+    curr->castType.getHeapType().getBottom(),
+    curr->ref->type.getHeapType().getBottom(),
+    curr,
+    "ref.test target type and ref type must have a common supertype");
 }
 
 void FunctionValidator::visitRefCast(RefCast* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "ref.cast requires gc to be enabled");
-  if (curr->ref->type != Type::unreachable) {
-    shouldBeTrue(
-      curr->ref->type.isRef(), curr, "ref.cast ref must have ref type");
+    getModule()->features.hasGC(), curr, "ref.cast requires gc [--enable-gc]");
+  if (curr->ref->type == Type::unreachable) {
+    return;
   }
-  shouldBeUnequal(curr->intendedType,
-                  HeapType(),
-                  curr,
-                  "static ref.cast must set intendedType field");
-  shouldBeTrue(
-    !curr->intendedType.isBasic(), curr, "ref.cast must cast to a non-basic");
+  if (!shouldBeTrue(
+        curr->ref->type.isRef(), curr, "ref.cast ref must have ref type")) {
+    return;
+  }
+  shouldBeEqual(
+    curr->type.getHeapType().getBottom(),
+    curr->ref->type.getHeapType().getBottom(),
+    curr,
+    "ref.cast target type and ref type must have a common supertype");
+
+  // We should never have a nullable cast of a non-nullable reference, since
+  // that unnecessarily loses type information.
+  shouldBeTrue(curr->ref->type.isNullable() || curr->type.isNonNullable(),
+               curr,
+               "ref.cast null of non-nullable references are not allowed");
 }
 
 void FunctionValidator::visitBrOn(BrOn* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "br_on_cast requires gc to be enabled");
-  if (curr->ref->type != Type::unreachable) {
-    shouldBeTrue(
-      curr->ref->type.isRef(), curr, "br_on_cast ref must have ref type");
+               "br_on_cast requires gc [--enable-gc]");
+  if (curr->ref->type == Type::unreachable) {
+    return;
+  }
+  if (!shouldBeTrue(
+        curr->ref->type.isRef(), curr, "br_on_cast ref must have ref type")) {
+    return;
   }
   if (curr->op == BrOnCast || curr->op == BrOnCastFail) {
-    shouldBeUnequal(curr->intendedType,
-                    HeapType(),
-                    curr,
-                    "static br_on_cast* must set intendedType field");
-    shouldBeTrue(!curr->intendedType.isBasic(),
-                 curr,
-                 "br_on_cast* must cast to a non-basic");
+    if (!shouldBeTrue(curr->castType.isRef(),
+                      curr,
+                      "br_on_cast must have reference cast type")) {
+      return;
+    }
+    shouldBeEqual(
+      curr->castType.getHeapType().getBottom(),
+      curr->ref->type.getHeapType().getBottom(),
+      curr,
+      "br_on_cast* target type and ref type must have a common supertype");
   } else {
-    shouldBeEqual(curr->intendedType,
-                  HeapType(),
+    shouldBeEqual(curr->castType,
+                  Type(Type::none),
                   curr,
                   "non-cast br_on* must not set intendedType field");
   }
@@ -2540,7 +2577,7 @@ void FunctionValidator::visitBrOn(BrOn* curr) {
 void FunctionValidator::visitStructNew(StructNew* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "struct.new requires gc to be enabled");
+               "struct.new requires gc [--enable-gc]");
   if (curr->type == Type::unreachable) {
     return;
   }
@@ -2567,10 +2604,12 @@ void FunctionValidator::visitStructNew(StructNew* curr) {
                       "struct.new must have the right number of operands")) {
       // All the fields must have the proper type.
       for (Index i = 0; i < fields.size(); i++) {
-        shouldBeSubType(curr->operands[i]->type,
-                        fields[i].type,
-                        curr,
-                        "struct.new operand must have proper type");
+        if (!Type::isSubType(curr->operands[i]->type, fields[i].type)) {
+          info.fail("struct.new operand " + std::to_string(i) +
+                      " must have proper type",
+                    curr,
+                    getFunction());
+        }
       }
     }
   }
@@ -2579,8 +2618,8 @@ void FunctionValidator::visitStructNew(StructNew* curr) {
 void FunctionValidator::visitStructGet(StructGet* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "struct.get requires gc to be enabled");
-  if (curr->ref->type == Type::unreachable) {
+               "struct.get requires gc [--enable-gc]");
+  if (curr->type == Type::unreachable || curr->ref->type.isNull()) {
     return;
   }
   if (!shouldBeTrue(curr->ref->type.isStruct(),
@@ -2606,31 +2645,37 @@ void FunctionValidator::visitStructGet(StructGet* curr) {
 void FunctionValidator::visitStructSet(StructSet* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "struct.set requires gc to be enabled");
+               "struct.set requires gc [--enable-gc]");
   if (curr->ref->type == Type::unreachable) {
     return;
   }
-  if (!shouldBeTrue(curr->ref->type.isStruct(),
+  if (!shouldBeTrue(curr->ref->type.isRef(),
                     curr->ref,
-                    "struct.set ref must be a struct")) {
+                    "struct.set ref must be a reference type")) {
     return;
   }
-  if (curr->ref->type != Type::unreachable) {
-    const auto& fields = curr->ref->type.getHeapType().getStruct().fields;
-    shouldBeTrue(curr->index < fields.size(), curr, "bad struct.get field");
-    auto& field = fields[curr->index];
-    shouldBeSubType(curr->value->type,
-                    field.type,
-                    curr,
-                    "struct.set must have the proper type");
-    shouldBeEqual(
-      field.mutable_, Mutable, curr, "struct.set field must be mutable");
+  auto type = curr->ref->type.getHeapType();
+  if (type == HeapType::none) {
+    return;
   }
+  if (!shouldBeTrue(
+        type.isStruct(), curr->ref, "struct.set ref must be a struct")) {
+    return;
+  }
+  const auto& fields = type.getStruct().fields;
+  shouldBeTrue(curr->index < fields.size(), curr, "bad struct.get field");
+  auto& field = fields[curr->index];
+  shouldBeSubType(curr->value->type,
+                  field.type,
+                  curr,
+                  "struct.set must have the proper type");
+  shouldBeEqual(
+    field.mutable_, Mutable, curr, "struct.set field must be mutable");
 }
 
 void FunctionValidator::visitArrayNew(ArrayNew* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "array.new requires gc to be enabled");
+    getModule()->features.hasGC(), curr, "array.new requires gc [--enable-gc]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->size->type, Type(Type::i32), curr, "array.new size must be an i32");
   if (curr->type == Type::unreachable) {
@@ -2659,10 +2704,77 @@ void FunctionValidator::visitArrayNew(ArrayNew* curr) {
   }
 }
 
+void FunctionValidator::visitArrayNewSeg(ArrayNewSeg* curr) {
+  shouldBeTrue(getModule()->features.hasGC(),
+               curr,
+               "array.new_{data, elem} requires gc [--enable-gc]");
+  shouldBeEqualOrFirstIsUnreachable(
+    curr->offset->type,
+    Type(Type::i32),
+    curr,
+    "array.new_{data, elem} offset must be an i32");
+  shouldBeEqualOrFirstIsUnreachable(
+    curr->size->type,
+    Type(Type::i32),
+    curr,
+    "array.new_{data, elem} size must be an i32");
+  switch (curr->op) {
+    case NewData:
+      if (!shouldBeTrue(curr->segment < getModule()->dataSegments.size(),
+                        curr,
+                        "array.new_data segment index out of bounds")) {
+        return;
+      }
+      break;
+    case NewElem:
+      if (!shouldBeTrue(curr->segment < getModule()->elementSegments.size(),
+                        curr,
+                        "array.new_elem segment index out of bounds")) {
+        return;
+      }
+      break;
+    default:
+      WASM_UNREACHABLE("unexpected op");
+  }
+  if (curr->type == Type::unreachable) {
+    return;
+  }
+  if (!shouldBeTrue(
+        curr->type.isRef(),
+        curr,
+        "array.new_{data, elem} type should be an array reference")) {
+    return;
+  }
+  auto heapType = curr->type.getHeapType();
+  if (!shouldBeTrue(
+        heapType.isArray(),
+        curr,
+        "array.new_{data, elem} type shoudl be an array reference")) {
+    return;
+  }
+  auto elemType = heapType.getArray().element.type;
+  switch (curr->op) {
+    case NewData:
+      shouldBeTrue(elemType.isNumber(),
+                   curr,
+                   "array.new_data result element type should be numeric");
+      break;
+    case NewElem:
+      shouldBeSubType(getModule()->elementSegments[curr->segment]->type,
+                      elemType,
+                      curr,
+                      "array.new_elem segment type should be a subtype of the "
+                      "result element type");
+      break;
+    default:
+      WASM_UNREACHABLE("unexpected op");
+  }
+}
+
 void FunctionValidator::visitArrayInit(ArrayInit* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "array.init requires gc to be enabled");
+               "array.init requires gc [--enable-gc]");
   if (curr->type == Type::unreachable) {
     return;
   }
@@ -2682,13 +2794,28 @@ void FunctionValidator::visitArrayInit(ArrayInit* curr) {
 
 void FunctionValidator::visitArrayGet(ArrayGet* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "array.get requires gc to be enabled");
+    getModule()->features.hasGC(), curr, "array.get requires gc [--enable-gc]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->index->type, Type(Type::i32), curr, "array.get index must be an i32");
   if (curr->type == Type::unreachable) {
     return;
   }
-  const auto& element = curr->ref->type.getHeapType().getArray().element;
+  if (!shouldBeSubType(curr->ref->type,
+                       Type(HeapType::array, Nullable),
+                       curr,
+                       "array.get target should be an array reference")) {
+    return;
+  }
+  auto heapType = curr->ref->type.getHeapType();
+  if (heapType == HeapType::none) {
+    return;
+  }
+  if (!shouldBeTrue(heapType != HeapType::array,
+                    curr,
+                    "array.get target should be a specific array reference")) {
+    return;
+  }
+  const auto& element = heapType.getArray().element;
   // If the type is not packed, it must be marked internally as unsigned, by
   // convention.
   if (element.type != Type::i32 || element.packedType == Field::not_packed) {
@@ -2700,10 +2827,25 @@ void FunctionValidator::visitArrayGet(ArrayGet* curr) {
 
 void FunctionValidator::visitArraySet(ArraySet* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "array.set requires gc to be enabled");
+    getModule()->features.hasGC(), curr, "array.set requires gc [--enable-gc]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->index->type, Type(Type::i32), curr, "array.set index must be an i32");
   if (curr->type == Type::unreachable) {
+    return;
+  }
+  if (!shouldBeSubType(curr->ref->type,
+                       Type(HeapType::array, Nullable),
+                       curr,
+                       "array.set target should be an array reference")) {
+    return;
+  }
+  auto heapType = curr->ref->type.getHeapType();
+  if (heapType == HeapType::none) {
+    return;
+  }
+  if (!shouldBeTrue(heapType != HeapType::array,
+                    curr,
+                    "array.set target should be a specific array reference")) {
     return;
   }
   const auto& element = curr->ref->type.getHeapType().getArray().element;
@@ -2716,15 +2858,19 @@ void FunctionValidator::visitArraySet(ArraySet* curr) {
 
 void FunctionValidator::visitArrayLen(ArrayLen* curr) {
   shouldBeTrue(
-    getModule()->features.hasGC(), curr, "array.len requires gc to be enabled");
+    getModule()->features.hasGC(), curr, "array.len requires gc [--enable-gc]");
   shouldBeEqualOrFirstIsUnreachable(
     curr->type, Type(Type::i32), curr, "array.len result must be an i32");
+  shouldBeSubType(curr->ref->type,
+                  Type(HeapType::array, Nullable),
+                  curr,
+                  "array.len argument must be an array reference");
 }
 
 void FunctionValidator::visitArrayCopy(ArrayCopy* curr) {
   shouldBeTrue(getModule()->features.hasGC(),
                curr,
-               "array.copy requires gc to be enabled");
+               "array.copy requires gc [--enable-gc]");
   shouldBeEqualOrFirstIsUnreachable(curr->srcIndex->type,
                                     Type(Type::i32),
                                     curr,
@@ -2736,9 +2882,33 @@ void FunctionValidator::visitArrayCopy(ArrayCopy* curr) {
   if (curr->type == Type::unreachable) {
     return;
   }
-  const auto& srcElement = curr->srcRef->type.getHeapType().getArray().element;
-  const auto& destElement =
-    curr->destRef->type.getHeapType().getArray().element;
+  if (!shouldBeSubType(curr->srcRef->type,
+                       Type(HeapType::array, Nullable),
+                       curr,
+                       "array.copy source should be an array reference") ||
+      !shouldBeSubType(curr->destRef->type,
+                       Type(HeapType::array, Nullable),
+                       curr,
+                       "array.copy destination should be an array reference")) {
+    return;
+  }
+  auto srcHeapType = curr->srcRef->type.getHeapType();
+  auto destHeapType = curr->destRef->type.getHeapType();
+  if (srcHeapType == HeapType::none || destHeapType == HeapType::none) {
+    return;
+  }
+  if (!shouldBeTrue(
+        srcHeapType != HeapType::array,
+        curr,
+        "array.copy source needs to be a specific array reference") ||
+      !shouldBeTrue(
+        srcHeapType != HeapType::array,
+        curr,
+        "array.copy destination needs to be a specific array reference")) {
+    return;
+  }
+  const auto& srcElement = srcHeapType.getArray().element;
+  const auto& destElement = destHeapType.getArray().element;
   shouldBeSubType(srcElement.type,
                   destElement.type,
                   curr,
@@ -2753,6 +2923,11 @@ void FunctionValidator::visitFunction(Function* curr) {
                  "Multivalue function results (multivalue is not enabled)");
   }
   FeatureSet features;
+  // Check for things like having a rec group with GC enabled. The type we're
+  // checking is a reference type even if this an MVP function type, so ignore
+  // the reference types feature here.
+  features |=
+    (Type(curr->type, Nullable).getFeatures() & ~FeatureSet::ReferenceTypes);
   for (const auto& param : curr->getParams()) {
     features |= param.getFeatures();
     shouldBeTrue(param.isConcrete(), curr, "params must be concretely typed");
@@ -2843,27 +3018,7 @@ static bool checkSegmentOffset(Expression* curr,
                                Address add,
                                Address max,
                                FeatureSet features) {
-  if (!Properties::isValidInConstantExpression(curr, features)) {
-    return false;
-  }
-  auto* c = curr->dynCast<Const>();
-  if (!c) {
-    // Unless the instruction is actually a const instruction, we don't
-    // currently try to evaluate it.
-    // TODO: Attempt to evaluate other expressions that might also be const
-    // such as `global.get` or more complex instruction sequences involving
-    // add/sub/mul/etc.
-    return true;
-  }
-  uint64_t raw = c->value.getInteger();
-  if (raw > std::numeric_limits<Address::address32_t>::max()) {
-    return false;
-  }
-  if (raw + uint64_t(add) > std::numeric_limits<Address::address32_t>::max()) {
-    return false;
-  }
-  Address offset = raw;
-  return offset + add <= max;
+  return Properties::isValidInConstantExpression(curr, features);
 }
 
 void FunctionValidator::validateAlignment(
@@ -2937,8 +3092,11 @@ static void validateBinaryenIR(Module& wasm, ValidationInfo& info) {
         bool validControlFlowStructureChange =
           Properties::isControlFlowStructure(curr) && oldType.isConcrete() &&
           newType == Type::unreachable;
-        if (!Type::isSubType(newType, oldType) &&
-            !validControlFlowStructureChange) {
+        // It's ok in general for types to get refined as long as they don't
+        // become unreachable.
+        bool validRefinement =
+          Type::isSubType(newType, oldType) && newType != Type::unreachable;
+        if (!validRefinement && !validControlFlowStructureChange) {
           std::ostringstream ss;
           ss << "stale type found in " << scope << " on " << curr
              << "\n(marked as " << oldType << ", should be " << newType
@@ -2968,8 +3126,8 @@ static void validateImports(Module& module, ValidationInfo& info) {
     if (curr->getResults().isTuple()) {
       info.shouldBeTrue(module.features.hasMultivalue(),
                         curr->name,
-                        "Imported multivalue function "
-                        "(multivalue is not enabled)");
+                        "Imported multivalue function requires multivalue "
+                        "[--enable-multivalue]");
     }
     if (info.validateWeb) {
       for (const auto& param : curr->getParams()) {
@@ -2998,8 +3156,10 @@ static void validateImports(Module& module, ValidationInfo& info) {
   });
   ModuleUtils::iterImportedGlobals(module, [&](Global* curr) {
     if (!module.features.hasMutableGlobals()) {
-      info.shouldBeFalse(
-        curr->mutable_, curr->name, "Imported global cannot be mutable");
+      info.shouldBeFalse(curr->mutable_,
+                         curr->name,
+                         "Imported mutable global requires mutable-globals "
+                         "[--enable-mutable-globals]");
     }
     info.shouldBeFalse(
       curr->type.isTuple(), curr->name, "Imported global cannot be tuple");
@@ -3028,8 +3188,10 @@ static void validateExports(Module& module, ValidationInfo& info) {
     } else if (curr->kind == ExternalKind::Global) {
       if (Global* g = module.getGlobalOrNull(curr->value)) {
         if (!module.features.hasMutableGlobals()) {
-          info.shouldBeFalse(
-            g->mutable_, g->name, "Exported global cannot be mutable");
+          info.shouldBeFalse(g->mutable_,
+                             g->name,
+                             "Exported mutable global requires mutable-globals "
+                             "[--enable-mutable-globals]");
         }
         info.shouldBeFalse(
           g->type.isTuple(), g->name, "Exported global cannot be tuple");
@@ -3098,15 +3260,17 @@ static void validateMemories(Module& module, ValidationInfo& info) {
     info.shouldBeTrue(
       module.features.hasMultiMemories(),
       "memory",
-      "multiple memories present, but multi-memories is disabled");
+      "multiple memories require multi-memories [--enable-multi-memories]");
   }
   for (auto& memory : module.memories) {
-    info.shouldBeFalse(
-      memory->initial > memory->max, "memory", "memory max >= initial");
+    if (memory->hasMax()) {
+      info.shouldBeFalse(
+        memory->initial > memory->max, "memory", "memory max >= initial");
+    }
     if (memory->is64()) {
       info.shouldBeTrue(module.features.hasMemory64(),
                         "memory",
-                        "memory is 64-bit, but memory64 is disabled");
+                        "64-bit memories require memory64 [--enable-memory64]");
     } else {
       info.shouldBeTrue(memory->initial <= Memory::kMaxSize32,
                         "memory",
@@ -3121,7 +3285,7 @@ static void validateMemories(Module& module, ValidationInfo& info) {
     if (memory->shared) {
       info.shouldBeTrue(module.features.hasAtomics(),
                         "memory",
-                        "memory is shared, but atomics are disabled");
+                        "shared memory requires threads [--enable-threads]");
     }
   }
 }
@@ -3130,18 +3294,21 @@ static void validateDataSegments(Module& module, ValidationInfo& info) {
   for (auto& segment : module.dataSegments) {
     auto size = segment->data.size();
     if (segment->isPassive) {
-      info.shouldBeTrue(module.features.hasBulkMemory(),
-                        segment->offset,
-                        "nonzero segment flags (bulk memory is disabled)");
+      info.shouldBeTrue(
+        module.features.hasBulkMemory(),
+        segment->offset,
+        "nonzero segment flags require bulk memory [--enable-bulk-memory]");
       info.shouldBeEqual(segment->offset,
                          (Expression*)nullptr,
                          segment->offset,
                          "passive segment should not have an offset");
     } else {
       auto memory = module.getMemoryOrNull(segment->memory);
-      info.shouldBeTrue(memory != nullptr,
-                        "segment",
-                        "active segment must have a valid memory name");
+      if (!info.shouldBeTrue(memory != nullptr,
+                             "segment",
+                             "active segment must have a valid memory name")) {
+        continue;
+      }
       if (memory->is64()) {
         if (!info.shouldBeEqual(segment->offset->type,
                                 Type(Type::i64),
@@ -3163,13 +3330,6 @@ static void validateDataSegments(Module& module, ValidationInfo& info) {
                                            module.features),
                         segment->offset,
                         "memory segment offset should be reasonable");
-      if (segment->offset->is<Const>()) {
-        auto start = segment->offset->cast<Const>()->value.getUnsigned();
-        auto end = start + size;
-        info.shouldBeTrue(end <= memory->initial * Memory::kPageSize,
-                          segment->data.size(),
-                          "segment size should fit in memory (end)");
-      }
       FunctionValidator(module, &info).validate(segment->offset);
       // If the memory is imported we don't actually know its initial size.
       // Specifically wasm dll's import a zero sized memory which is perfectly
@@ -3305,9 +3465,10 @@ static void validateTables(Module& module, ValidationInfo& info) {
 
 static void validateTags(Module& module, ValidationInfo& info) {
   if (!module.tags.empty()) {
-    info.shouldBeTrue(module.features.hasExceptionHandling(),
-                      module.tags[0]->name,
-                      "Module has tags (exception-handling is disabled)");
+    info.shouldBeTrue(
+      module.features.hasExceptionHandling(),
+      module.tags[0]->name,
+      "Tags require exception-handling [--enable-exception-handling]");
   }
   for (auto& curr : module.tags) {
     info.shouldBeEqual(curr->sig.results,
@@ -3315,9 +3476,10 @@ static void validateTags(Module& module, ValidationInfo& info) {
                        curr->name,
                        "Tag type's result type should be none");
     if (curr->sig.params.isTuple()) {
-      info.shouldBeTrue(module.features.hasMultivalue(),
-                        curr->name,
-                        "Multivalue tag type (multivalue is not enabled)");
+      info.shouldBeTrue(
+        module.features.hasMultivalue(),
+        curr->name,
+        "Multivalue tag type requires multivalue [--enable-multivalue]");
     }
     for (const auto& param : curr->sig.params) {
       info.shouldBeTrue(param.isConcrete(),
@@ -3351,6 +3513,32 @@ static void validateFeatures(Module& module, ValidationInfo& info) {
   }
 }
 
+static void validateClosedWorldInterface(Module& module, ValidationInfo& info) {
+  // Error if there are any publicly exposed heap types beyond the types of
+  // publicly exposed functions.
+  std::unordered_set<HeapType> publicFuncTypes;
+  ModuleUtils::iterImportedFunctions(
+    module, [&](Function* func) { publicFuncTypes.insert(func->type); });
+  for (auto& ex : module.exports) {
+    if (ex->kind == ExternalKind::Function) {
+      publicFuncTypes.insert(module.getFunction(ex->value)->type);
+    }
+  }
+
+  for (auto type : ModuleUtils::getPublicHeapTypes(module)) {
+    if (!publicFuncTypes.count(type)) {
+      auto name = type.toString();
+      if (auto it = module.typeNames.find(type); it != module.typeNames.end()) {
+        name = it->second.name.toString();
+      }
+      info.fail("publicly exposed type disallowed with a closed world: $" +
+                  name,
+                type,
+                nullptr);
+    }
+  }
+}
+
 // TODO: If we want the validator to be part of libwasm rather than libpasses,
 // then Using PassRunner::getPassDebug causes a circular dependence. We should
 // fix that, perhaps by moving some of the pass infrastructure into libsupport.
@@ -3359,6 +3547,7 @@ bool WasmValidator::validate(Module& module, Flags flags) {
   info.validateWeb = (flags & Web) != 0;
   info.validateGlobally = (flags & Globally) != 0;
   info.quiet = (flags & Quiet) != 0;
+  info.closedWorld = (flags & ClosedWorld) != 0;
   // parallel wasm logic validation
   PassRunner runner(&module);
   FunctionValidator(module, &info).validate(&runner);
@@ -3373,6 +3562,9 @@ bool WasmValidator::validate(Module& module, Flags flags) {
     validateTags(module, info);
     validateModule(module, info);
     validateFeatures(module, info);
+    if (info.closedWorld) {
+      validateClosedWorldInterface(module, info);
+    }
   }
   // validate additional internal IR details when in pass-debug mode
   if (PassRunner::getPassDebug()) {
@@ -3386,6 +3578,14 @@ bool WasmValidator::validate(Module& module, Flags flags) {
     std::cerr << info.getStream(nullptr).str();
   }
   return info.valid.load();
+}
+
+bool WasmValidator::validate(Module& module, const PassOptions& options) {
+  Flags flags = options.validateGlobally ? Globally : Minimal;
+  if (options.closedWorld) {
+    flags |= ClosedWorld;
+  }
+  return validate(module, flags);
 }
 
 bool WasmValidator::validate(Function* func, Module& module, Flags flags) {

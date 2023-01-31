@@ -44,8 +44,6 @@ struct WasmException {
 };
 std::ostream& operator<<(std::ostream& o, const WasmException& exn);
 
-using namespace cashew;
-
 // Utilities
 
 extern Name WASM, RETURN_FLOW, NONCONSTANT_FLOW;
@@ -82,7 +80,7 @@ public:
 
   void clearIf(Name target) {
     if (breakTo == target) {
-      breakTo.clear();
+      breakTo = Name{};
     }
   }
 
@@ -1338,27 +1336,15 @@ public:
     NOTE_ENTER("RefNull");
     return Literal::makeNull(curr->type.getHeapType());
   }
-  Flow visitRefIs(RefIs* curr) {
-    NOTE_ENTER("RefIs");
+  Flow visitRefIsNull(RefIsNull* curr) {
+    NOTE_ENTER("RefIsNull");
     Flow flow = visit(curr->value);
     if (flow.breaking()) {
       return flow;
     }
     const auto& value = flow.getSingleValue();
     NOTE_EVAL1(value);
-    switch (curr->op) {
-      case RefIsNull:
-        return Literal(value.isNull());
-      case RefIsFunc:
-        return Literal(!value.isNull() && value.type.isFunction());
-      case RefIsData:
-        return Literal(!value.isNull() && value.isData());
-      case RefIsI31:
-        return Literal(!value.isNull() &&
-                       value.type.getHeapType() == HeapType::i31);
-      default:
-        WASM_UNREACHABLE("unimplemented ref.is_*");
-    }
+    return Literal(int32_t(value.isNull()));
   }
   Flow visitRefFunc(RefFunc* curr) {
     NOTE_ENTER("RefFunc");
@@ -1433,10 +1419,6 @@ public:
     struct Breaking : Flow {
       Breaking(Flow breaking) : Flow(breaking) {}
     };
-    // The null input to the cast.
-    struct Null : Literal {
-      Null(Literal original) : Literal(original) {}
-    };
     // The result of the successful cast.
     struct Success : Literal {
       Success(Literal result) : Literal(result) {}
@@ -1446,20 +1428,12 @@ public:
       Failure(Literal original) : Literal(original) {}
     };
 
-    std::variant<Breaking, Null, Success, Failure> state;
+    std::variant<Breaking, Success, Failure> state;
 
     template<class T> Cast(T state) : state(state) {}
     Flow* getBreaking() { return std::get_if<Breaking>(&state); }
-    Literal* getNull() { return std::get_if<Null>(&state); }
     Literal* getSuccess() { return std::get_if<Success>(&state); }
     Literal* getFailure() { return std::get_if<Failure>(&state); }
-    Literal* getNullOrFailure() {
-      if (auto* original = getNull()) {
-        return original;
-      } else {
-        return getFailure();
-      }
-    }
   };
 
   template<typename T> Cast doCast(T* curr) {
@@ -1467,21 +1441,19 @@ public:
     if (ref.breaking()) {
       return typename Cast::Breaking{ref};
     }
-    Literal original = ref.getSingleValue();
-    if (original.isNull()) {
-      return typename Cast::Null{original};
+    Literal val = ref.getSingleValue();
+    Type castType = curr->getCastType();
+    if (val.isNull()) {
+      if (castType.isNullable()) {
+        return typename Cast::Success{val};
+      } else {
+        return typename Cast::Failure{val};
+      }
     }
-    // The input may not be GC data or a function; for example it could be an
-    // anyref or an i31. The cast definitely fails in these cases.
-    if (!original.isData() && !original.isFunction()) {
-      return typename Cast::Failure{original};
-    }
-    HeapType actualType = original.type.getHeapType();
-    // We have the actual and intended types, so perform the cast.
-    if (HeapType::isSubType(actualType, curr->intendedType)) {
-      return typename Cast::Success{original};
+    if (HeapType::isSubType(val.type.getHeapType(), castType.getHeapType())) {
+      return typename Cast::Success{val};
     } else {
-      return typename Cast::Failure{original};
+      return typename Cast::Failure{val};
     }
   }
 
@@ -1499,8 +1471,6 @@ public:
     auto cast = doCast(curr);
     if (auto* breaking = cast.getBreaking()) {
       return *breaking;
-    } else if (cast.getNull()) {
-      return Literal::makeNull(curr->type.getHeapType());
     } else if (auto* result = cast.getSuccess()) {
       return *result;
     }
@@ -1515,7 +1485,7 @@ public:
       auto cast = doCast(curr);
       if (auto* breaking = cast.getBreaking()) {
         return *breaking;
-      } else if (auto* original = cast.getNullOrFailure()) {
+      } else if (auto* original = cast.getFailure()) {
         if (curr->op == BrOnCast) {
           return *original;
         } else {
@@ -1531,7 +1501,7 @@ public:
         }
       }
     }
-    // The others do a simpler check for the type.
+    // Otherwise we are just checking for null.
     Flow flow = visit(curr->ref);
     if (flow.breaking()) {
       return flow;
@@ -1539,62 +1509,20 @@ public:
     const auto& value = flow.getSingleValue();
     NOTE_EVAL1(value);
     if (curr->op == BrOnNull) {
-      // Unlike the others, BrOnNull does not propagate the value if it takes
-      // the branch.
+      // BrOnNull does not propagate the value if it takes the branch.
       if (value.isNull()) {
         return Flow(curr->name);
       }
       // If the branch is not taken, we return the non-null value.
       return {value};
-    }
-    if (curr->op == BrOnNonNull) {
-      // Unlike the others, BrOnNonNull does not return a value if it does not
-      // take the branch.
+    } else {
+      // BrOnNonNull does not return a value if it does not take the branch.
       if (value.isNull()) {
         return Flow();
       }
       // If the branch is taken, we send the non-null value.
       return Flow(curr->name, value);
     }
-    // See if the input is the right kind (ignoring the flipping behavior of
-    // BrOn*).
-    bool isRightKind;
-    if (value.isNull()) {
-      // A null is never the right kind.
-      isRightKind = false;
-    } else {
-      switch (curr->op) {
-        case BrOnNonFunc:
-        case BrOnFunc:
-          isRightKind = value.type.isFunction();
-          break;
-        case BrOnNonData:
-        case BrOnData:
-          isRightKind = value.isData();
-          break;
-        case BrOnNonI31:
-        case BrOnI31:
-          isRightKind = value.type.getHeapType() == HeapType::i31;
-          break;
-        default:
-          WASM_UNREACHABLE("invalid br_on_*");
-      }
-    }
-    // The Non* operations require us to flip the normal behavior.
-    switch (curr->op) {
-      case BrOnNonFunc:
-      case BrOnNonData:
-      case BrOnNonI31:
-        isRightKind = !isRightKind;
-        break;
-      default: {
-      }
-    }
-    if (isRightKind) {
-      // Take the branch.
-      return Flow(curr->name, value);
-    }
-    return {value};
   }
   Flow visitStructNew(StructNew* curr) {
     NOTE_ENTER("StructNew");
@@ -1703,6 +1631,7 @@ public:
     return Literal(std::make_shared<GCData>(curr->type.getHeapType(), data),
                    curr->type.getHeapType());
   }
+  Flow visitArrayNewSeg(ArrayNewSeg* curr) { WASM_UNREACHABLE("unimp"); }
   Flow visitArrayInit(ArrayInit* curr) {
     NOTE_ENTER("ArrayInit");
     Index num = curr->values.size();
@@ -1858,29 +1787,12 @@ public:
     switch (curr->op) {
       case RefAsNonNull:
         // We've already checked for a null.
-        break;
-      case RefAsFunc:
-        if (!value.type.isFunction()) {
-          trap("not a func");
-        }
-        break;
-      case RefAsData:
-        if (!value.isData()) {
-          trap("not a data");
-        }
-        break;
-      case RefAsI31:
-        if (value.type.getHeapType() != HeapType::i31) {
-          trap("not an i31");
-        }
-        break;
+        return value;
       case ExternInternalize:
       case ExternExternalize:
         WASM_UNREACHABLE("unimplemented extern conversion");
-      default:
-        WASM_UNREACHABLE("unimplemented ref.as_*");
     }
-    return value;
+    WASM_UNREACHABLE("unimplemented ref.as_*");
   }
   Flow visitStringNew(StringNew* curr) { WASM_UNREACHABLE("unimp"); }
   Flow visitStringConst(StringConst* curr) { WASM_UNREACHABLE("unimp"); }
@@ -1969,7 +1881,7 @@ public:
   // Flags indicating special requirements, for example whether we are just
   // evaluating (default), also going to replace the expression afterwards or
   // executing in a function-parallel scenario. See FlagValues.
-  typedef uint32_t Flags;
+  using Flags = uint32_t;
 
   // Indicates no limit of maxDepth or maxLoopIterations.
   static const Index NO_LIMIT = 0;
@@ -2188,6 +2100,10 @@ public:
   }
   Flow visitSIMDLoadStoreLane(SIMDLoadStoreLane* curr) {
     NOTE_ENTER("SIMDLoadStoreLane");
+    return Flow(NONCONSTANT_FLOW);
+  }
+  Flow visitArrayNewSeg(ArrayNewSeg* curr) {
+    NOTE_ENTER("ArrayNewSeg");
     return Flow(NONCONSTANT_FLOW);
   }
   Flow visitPop(Pop* curr) {
@@ -2514,7 +2430,7 @@ public:
   std::string printFunctionStack() {
     std::string ret = "/== (binaryen interpreter stack trace)\n";
     for (int i = int(functionStack.size()) - 1; i >= 0; i--) {
-      ret += std::string("|: ") + functionStack[i].str + "\n";
+      ret += std::string("|: ") + functionStack[i].toString() + "\n";
     }
     ret += std::string("\\==\n");
     return ret;
@@ -3497,6 +3413,64 @@ public:
     }
     return {};
   }
+  Flow visitArrayNewSeg(ArrayNewSeg* curr) {
+    NOTE_ENTER("ArrayNewSeg");
+    auto offsetFlow = self()->visit(curr->offset);
+    if (offsetFlow.breaking()) {
+      return offsetFlow;
+    }
+    auto sizeFlow = self()->visit(curr->size);
+    if (sizeFlow.breaking()) {
+      return sizeFlow;
+    }
+
+    uint64_t offset = offsetFlow.getSingleValue().getUnsigned();
+    uint64_t size = sizeFlow.getSingleValue().getUnsigned();
+
+    auto heapType = curr->type.getHeapType();
+    const auto& element = heapType.getArray().element;
+    [[maybe_unused]] auto elemType = heapType.getArray().element.type;
+
+    Literals contents;
+
+    switch (curr->op) {
+      case NewData: {
+        assert(curr->segment < wasm.dataSegments.size());
+        assert(elemType.isNumber());
+        const auto& seg = *wasm.dataSegments[curr->segment];
+        auto elemBytes = element.getByteSize();
+        auto end = offset + size * elemBytes;
+        if ((size != 0ull && droppedSegments.count(curr->segment)) ||
+            end > seg.data.size()) {
+          trap("out of bounds segment access in array.new_data");
+        }
+        contents.reserve(size);
+        for (Index i = offset; i < end; i += elemBytes) {
+          auto addr = (void*)&seg.data[i];
+          contents.push_back(Literal::makeFromMemory(addr, element));
+        }
+        break;
+      }
+      case NewElem: {
+        assert(curr->segment < wasm.elementSegments.size());
+        const auto& seg = *wasm.elementSegments[curr->segment];
+        auto end = offset + size;
+        // TODO: Handle dropped element segments once we support those.
+        if (end > seg.data.size()) {
+          trap("out of bounds segment access in array.new_elem");
+        }
+        contents.reserve(size);
+        for (Index i = offset; i < end; ++i) {
+          auto val = self()->visit(seg.data[i]).getSingleValue();
+          contents.push_back(val);
+        }
+        break;
+      }
+      default:
+        WASM_UNREACHABLE("unexpected op");
+    }
+    return Literal(std::make_shared<GCData>(heapType, contents), heapType);
+  }
   Flow visitTry(Try* curr) {
     NOTE_ENTER("Try");
     try {
@@ -3506,7 +3480,7 @@ public:
       // the delegation, don't handle it and just rethrow.
       if (scope->currDelegateTarget.is()) {
         if (scope->currDelegateTarget == curr->name) {
-          scope->currDelegateTarget.clear();
+          scope->currDelegateTarget = Name{};
         } else {
           throw;
         }

@@ -173,8 +173,11 @@ public:
     // and store would need to do a check. Given that, we can just ignore
     // implicit traps like those when optimizing. (When not optimizing, it's
     // nice to see codegen that matches wasm more precisely.)
+    // It is also important to prevent the optimizer from adding new things that
+    // require additional lowering, as we could hit a cycle.
     if (options.optimizeLevel > 0) {
       options.ignoreImplicitTraps = true;
+      options.targetJS = true;
     }
   }
 
@@ -230,7 +233,7 @@ public:
     // First up check our cached of mangled names to avoid doing extra work
     // below
     auto& map = wasmNameToMangledName[(int)scope];
-    auto it = map.find(name.c_str());
+    auto it = map.find(name.str.data());
     if (it != map.end()) {
       return it->second;
     }
@@ -249,7 +252,7 @@ public:
     IString ret;
     for (int i = 0;; i++) {
       std::ostringstream out;
-      out << name.c_str();
+      out << name;
       if (i > 0) {
         out << "_" << i;
       }
@@ -276,7 +279,7 @@ public:
       }
       // We found a good name, use it.
       scopeMangledNames.insert(ret);
-      map[name.c_str()] = ret;
+      map[name.str.data()] = ret;
       return ret;
     }
   }
@@ -574,19 +577,10 @@ void Wasm2JSBuilder::addBasics(Ref ast, Module* wasm) {
   addMath(MATH_CEIL, CEIL);
   addMath(MATH_TRUNC, TRUNC);
   addMath(MATH_SQRT, SQRT);
-  // TODO: this shouldn't be needed once we stop generating literal asm.js code
-  // NaN and Infinity variables
-  Ref nanVar = ValueBuilder::makeVar();
-  ast->push_back(nanVar);
-  ValueBuilder::appendToVar(nanVar, "nan", ValueBuilder::makeName("NaN"));
-  Ref infinityVar = ValueBuilder::makeVar();
-  ast->push_back(infinityVar);
-  ValueBuilder::appendToVar(
-    infinityVar, "infinity", ValueBuilder::makeName("Infinity"));
 }
 
 static bool needsQuoting(Name name) {
-  auto mangled = asmangle(name.str);
+  auto mangled = asmangle(name.toString());
   return mangled != name.str;
 }
 
@@ -717,7 +711,7 @@ void Wasm2JSBuilder::addTable(Ref ast, Module* wasm) {
               } else if (auto* get = offset->dynCast<GlobalGet>()) {
                 index = ValueBuilder::makeBinary(
                   ValueBuilder::makeName(
-                    stringToIString(asmangle(get->name.str))),
+                    stringToIString(asmangle(get->name.toString()))),
                   PLUS,
                   ValueBuilder::makeNum(i));
               } else {
@@ -807,7 +801,7 @@ void Wasm2JSBuilder::addExports(Ref ast, Module* wasm) {
         // setter
         {
           std::ostringstream buffer;
-          buffer << '_' << identName.c_str();
+          buffer << '_' << identName;
           auto setterParam = stringToIString(buffer.str());
 
           auto block = ValueBuilder::makeBlock();
@@ -2212,7 +2206,7 @@ Ref Wasm2JSBuilder::processFunctionBody(Module* m,
       unimplemented(curr);
       WASM_UNREACHABLE("unimp");
     }
-    Ref visitRefIs(RefIs* curr) {
+    Ref visitRefIsNull(RefIsNull* curr) {
       unimplemented(curr);
       WASM_UNREACHABLE("unimp");
     }
@@ -2301,6 +2295,10 @@ Ref Wasm2JSBuilder::processFunctionBody(Module* m,
       WASM_UNREACHABLE("unimp");
     }
     Ref visitArrayNew(ArrayNew* curr) {
+      unimplemented(curr);
+      WASM_UNREACHABLE("unimp");
+    }
+    Ref visitArrayNewSeg(ArrayNewSeg* curr) {
       unimplemented(curr);
       WASM_UNREACHABLE("unimp");
     }
@@ -2615,8 +2613,8 @@ void Wasm2JSGlue::emitPreES6() {
     }
     baseModuleMap[base] = module;
     if (seenModules.count(module) == 0) {
-      out << "import * as " << asmangle(module.str) << " from '" << module.str
-          << "';\n";
+      out << "import * as " << asmangle(module.toString()) << " from '"
+          << module << "';\n";
       seenModules.insert(module);
     }
   };
@@ -2678,8 +2676,8 @@ void Wasm2JSGlue::emitPostES6() {
     if (seenModules.count(import->module) > 0) {
       return;
     }
-    out << "  \"" << import->module << "\": " << asmangle(import->module.str)
-        << ",\n";
+    out << "  \"" << import->module
+        << "\": " << asmangle(import->module.toString()) << ",\n";
     seenModules.insert(import->module);
   });
 
@@ -2690,7 +2688,7 @@ void Wasm2JSGlue::emitPostES6() {
       return;
     }
     out << "  \"" << import->module << "\": {\n";
-    out << "    " << asmangle(import->base.str) << ": { buffer : mem"
+    out << "    " << asmangle(import->base.toString()) << ": { buffer : mem"
         << moduleName.str << " }\n";
     out << "  },\n";
   });
@@ -2704,8 +2702,8 @@ void Wasm2JSGlue::emitPostES6() {
     if (seenModules.count(import->module) > 0) {
       return;
     }
-    out << "  \"" << import->module << "\": " << asmangle(import->module.str)
-        << ",\n";
+    out << "  \"" << import->module
+        << "\": " << asmangle(import->module.toString()) << ",\n";
     seenModules.insert(import->module);
   });
 
@@ -2729,15 +2727,15 @@ void Wasm2JSGlue::emitPostES6() {
         continue;
     }
     std::ostringstream export_name;
-    for (auto* ptr = exp->name.str; *ptr; ptr++) {
-      if (*ptr == '-') {
+    for (char c : exp->name.str) {
+      if (c == '-') {
         export_name << '_';
       } else {
-        export_name << *ptr;
+        export_name << c;
       }
     }
-    out << "export var " << asmangle(exp->name.str) << " = ret"
-        << moduleName.str << "." << asmangle(exp->name.str) << ";\n";
+    out << "export var " << asmangle(exp->name.toString()) << " = ret"
+        << moduleName << "." << asmangle(exp->name.toString()) << ";\n";
   }
 }
 
@@ -2816,8 +2814,8 @@ void Wasm2JSGlue::emitMemory() {
       if (auto* get = segment.offset->dynCast<GlobalGet>()) {
         auto internalName = get->name;
         auto importedGlobal = wasm.getGlobal(internalName);
-        return std::string("imports['") + importedGlobal->module.str + "']['" +
-               importedGlobal->base.str + "']";
+        return std::string("imports['") + importedGlobal->module.toString() +
+               "']['" + importedGlobal->base.toString() + "']";
       }
       Fatal() << "non-constant offsets aren't supported yet\n";
     };

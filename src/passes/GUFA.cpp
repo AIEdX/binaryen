@@ -110,13 +110,6 @@ struct GUFAOptimizer
       return;
     }
 
-    if (type.isRef() && (getTypeSystem() != TypeSystem::Nominal &&
-                         getTypeSystem() != TypeSystem::Isorecursive)) {
-      // Without type info we can't analyze subtypes, so we cannot infer
-      // anything about refs.
-      return;
-    }
-
     // Ok, this is an interesting location that we might optimize. See what the
     // oracle says is possible there.
     auto contents = getContents(curr);
@@ -243,10 +236,9 @@ struct GUFAOptimizer
     auto refType = refContents.getType();
     if (refType.isRef()) {
       // We have some knowledge of the type here. Use that to optimize: RefTest
-      // returns 1 iff the input is not null and is also a subtype.
-      bool isSubType =
-        HeapType::isSubType(refType.getHeapType(), curr->intendedType);
-      bool mayBeNull = refType.isNullable();
+      // returns 1 if the input is of a subtype of the intended type, that is,
+      // we are looking for a type in that cone of types.
+      auto intendedContents = PossibleContents::fullConeType(curr->castType);
 
       auto optimize = [&](int32_t result) {
         auto* last = Builder(*getModule()).makeConst(Literal(int32_t(result)));
@@ -254,9 +246,10 @@ struct GUFAOptimizer
           curr, *getModule(), getPassOptions(), last));
       };
 
-      if (!isSubType) {
+      if (!PossibleContents::haveIntersection(refContents, intendedContents)) {
         optimize(0);
-      } else if (!mayBeNull) {
+      } else if (PossibleContents::isSubContents(refContents,
+                                                 intendedContents)) {
         optimize(1);
       }
     }

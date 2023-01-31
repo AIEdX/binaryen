@@ -31,12 +31,10 @@ namespace wasm {
 
 class SourceLocation {
 public:
-  cashew::IString filename;
+  IString filename;
   uint32_t line;
   uint32_t column;
-  SourceLocation(cashew::IString filename_,
-                 uint32_t line_,
-                 uint32_t column_ = 0)
+  SourceLocation(IString filename_, uint32_t line_, uint32_t column_ = 0)
     : filename(filename_), line(line_), column(column_) {}
 };
 
@@ -44,11 +42,11 @@ public:
 // An element in an S-Expression: a list or a string
 //
 class Element {
-  typedef ArenaVector<Element*> List;
+  using List = ArenaVector<Element*>;
 
   bool isList_ = true;
   List list_;
-  cashew::IString str_;
+  IString str_;
   bool dollared_;
   bool quoted_;
 
@@ -74,9 +72,9 @@ public:
   List::Iterator end() { return list().end(); }
 
   // string methods
-  cashew::IString str() const;
-  const char* c_str() const;
-  Element* setString(cashew::IString str__, bool dollared__, bool quoted__);
+  IString str() const;
+  std::string toString() const;
+  Element* setString(IString str__, bool dollared__, bool quoted__);
   Element* setMetadata(size_t line_, size_t col_, SourceLocation* startLoc_);
 
   // comparisons
@@ -93,16 +91,16 @@ public:
 // Generic S-Expression parsing into lists
 //
 class SExpressionParser {
-  char* input;
+  const char* input;
   size_t line;
-  char* lineStart;
+  char const* lineStart;
   SourceLocation* loc = nullptr;
 
   MixedArena allocator;
 
 public:
   // Assumes control of and modifies the input.
-  SExpressionParser(char* input);
+  SExpressionParser(const char* input);
   Element* root;
 
 private:
@@ -138,7 +136,7 @@ class SExpressionWasmBuilder {
   int dataCounter = 0;
   // we need to know function return types before we parse their contents
   std::map<Name, HeapType> functionTypes;
-  std::unordered_map<cashew::IString, Index> debugInfoFileIndices;
+  std::unordered_map<IString, Index> debugInfoFileIndices;
 
   // Maps type indexes to a mapping of field index => name. This is not the same
   // as the field names stored on the wasm object, as that maps types after
@@ -168,6 +166,8 @@ private:
 
   UniqueNameMapper nameMapper;
 
+  int parseIndex(Element& s);
+
   Name getFunctionName(Element& s);
   Name getTableName(Element& s);
   Name getMemoryName(Element& s);
@@ -183,22 +183,20 @@ private:
   size_t parseFunctionNames(Element& s, Name& name, Name& exportName);
   void parseFunction(Element& s, bool preParseImport = false);
 
-  Type stringToType(cashew::IString str,
-                    bool allowError = false,
-                    bool prefix = false) {
+  Type stringToType(IString str, bool allowError = false, bool prefix = false) {
     return stringToType(str.str, allowError, prefix);
   }
-  Type
-  stringToType(const char* str, bool allowError = false, bool prefix = false);
-  HeapType stringToHeapType(cashew::IString str, bool prefix = false) {
+  Type stringToType(std::string_view str,
+                    bool allowError = false,
+                    bool prefix = false);
+  HeapType stringToHeapType(IString str, bool prefix = false) {
     return stringToHeapType(str.str, prefix);
   }
-  HeapType stringToHeapType(const char* str, bool prefix = false);
+  HeapType stringToHeapType(std::string_view str, bool prefix = false);
   Type elementToType(Element& s);
+  // TODO: Use std::string_view for this and similar functions.
   Type stringToLaneType(const char* str);
-  bool isType(cashew::IString str) {
-    return stringToType(str, true) != Type::none;
-  }
+  bool isType(IString str) { return stringToType(str, true) != Type::none; }
   HeapType getFunctionType(Name name, Element& s);
 
 public:
@@ -226,13 +224,12 @@ private:
   Expression* makeBlock(Element& s);
   Expression* makeThenOrElse(Element& s);
   Expression* makeConst(Element& s, Type type);
-  Expression* makeLoad(Element& s, Type type, bool isAtomic);
-  Expression* makeStore(Element& s, Type type, bool isAtomic);
-  Expression* makeAtomicRMWOrCmpxchg(Element& s, Type type);
   Expression*
-  makeAtomicRMW(Element& s, Type type, uint8_t bytes, const char* extra);
+  makeLoad(Element& s, Type type, bool signed_, int bytes, bool isAtomic);
+  Expression* makeStore(Element& s, Type type, int bytes, bool isAtomic);
   Expression*
-  makeAtomicCmpxchg(Element& s, Type type, uint8_t bytes, const char* extra);
+  makeAtomicRMW(Element& s, AtomicRMWOp op, Type type, uint8_t bytes);
+  Expression* makeAtomicCmpxchg(Element& s, Type type, uint8_t bytes);
   Expression* makeAtomicWait(Element& s, Type type);
   Expression* makeAtomicNotify(Element& s);
   Expression* makeAtomicFence(Element& s);
@@ -241,13 +238,13 @@ private:
   Expression* makeSIMDShuffle(Element& s);
   Expression* makeSIMDTernary(Element& s, SIMDTernaryOp op);
   Expression* makeSIMDShift(Element& s, SIMDShiftOp op);
-  Expression* makeSIMDLoad(Element& s, SIMDLoadOp op);
-  Expression* makeSIMDLoadStoreLane(Element& s, SIMDLoadStoreLaneOp op);
+  Expression* makeSIMDLoad(Element& s, SIMDLoadOp op, int bytes);
+  Expression*
+  makeSIMDLoadStoreLane(Element& s, SIMDLoadStoreLaneOp op, int bytes);
   Expression* makeMemoryInit(Element& s);
   Expression* makeDataDrop(Element& s);
   Expression* makeMemoryCopy(Element& s);
   Expression* makeMemoryFill(Element& s);
-  Expression* makePush(Element& s);
   Expression* makePop(Element& s);
   Expression* makeIf(Element& s);
   Expression* makeMaybeBlock(Element& s, size_t i, Type type);
@@ -270,7 +267,7 @@ private:
   Expression* makeBreakTable(Element& s);
   Expression* makeReturn(Element& s);
   Expression* makeRefNull(Element& s);
-  Expression* makeRefIs(Element& s, RefIsOp op);
+  Expression* makeRefIsNull(Element& s);
   Expression* makeRefFunc(Element& s);
   Expression* makeRefEq(Element& s);
   Expression* makeTableGet(Element& s);
@@ -286,28 +283,33 @@ private:
   Expression* makeCallRef(Element& s, bool isReturn);
   Expression* makeI31New(Element& s);
   Expression* makeI31Get(Element& s, bool signed_);
-  Expression* makeRefTestStatic(Element& s);
-  Expression* makeRefCastStatic(Element& s);
-  Expression* makeRefCastNopStatic(Element& s);
-  Expression* makeBrOn(Element& s, BrOnOp op);
-  Expression* makeBrOnStatic(Element& s, BrOnOp op);
-  Expression* makeStructNewStatic(Element& s, bool default_);
+  Expression* makeRefTest(Element& s,
+                          std::optional<Type> castType = std::nullopt);
+  Expression* makeRefCast(Element& s,
+                          std::optional<Type> castType = std::nullopt);
+  Expression* makeRefCastNop(Element& s);
+  Expression* makeBrOnNull(Element& s, bool onFail = false);
+  Expression*
+  makeBrOnCast(Element& s, std::optional<Type> castType, bool onFail = false);
+  Expression* makeStructNew(Element& s, bool default_);
   Index getStructIndex(Element& type, Element& field);
   Expression* makeStructGet(Element& s, bool signed_ = false);
   Expression* makeStructSet(Element& s);
-  Expression* makeArrayNewStatic(Element& s, bool default_);
+  Expression* makeArrayNew(Element& s, bool default_);
+  Expression* makeArrayNewSeg(Element& s, ArrayNewSegOp op);
   Expression* makeArrayInitStatic(Element& s);
   Expression* makeArrayGet(Element& s, bool signed_ = false);
   Expression* makeArraySet(Element& s);
   Expression* makeArrayLen(Element& s);
   Expression* makeArrayCopy(Element& s);
   Expression* makeRefAs(Element& s, RefAsOp op);
-  Expression* makeStringNew(Element& s, StringNewOp op);
+  Expression* makeRefAsNonNull(Element& s);
+  Expression* makeStringNew(Element& s, StringNewOp op, bool try_);
   Expression* makeStringConst(Element& s);
   Expression* makeStringMeasure(Element& s, StringMeasureOp op);
   Expression* makeStringEncode(Element& s, StringEncodeOp op);
   Expression* makeStringConcat(Element& s);
-  Expression* makeStringEq(Element& s);
+  Expression* makeStringEq(Element& s, StringEqOp op);
   Expression* makeStringAs(Element& s, StringAsOp op);
   Expression* makeStringWTF8Advance(Element& s);
   Expression* makeStringWTF16Get(Element& s);
@@ -334,7 +336,8 @@ private:
                       std::vector<NameType>& namedParams);
   size_t parseTypeUse(Element& s, size_t startPos, HeapType& functionType);
 
-  void stringToBinary(const char* input, size_t size, std::vector<char>& data);
+  void
+  stringToBinary(Element& s, std::string_view str, std::vector<char>& data);
   void parseMemory(Element& s, bool preParseImport = false);
   void parseData(Element& s);
   void parseInnerData(Element& s, Index i, std::unique_ptr<DataSegment>& seg);

@@ -128,7 +128,7 @@ void ReFinalize::visitReturn(Return* curr) { curr->finalize(); }
 void ReFinalize::visitMemorySize(MemorySize* curr) { curr->finalize(); }
 void ReFinalize::visitMemoryGrow(MemoryGrow* curr) { curr->finalize(); }
 void ReFinalize::visitRefNull(RefNull* curr) { curr->finalize(); }
-void ReFinalize::visitRefIs(RefIs* curr) { curr->finalize(); }
+void ReFinalize::visitRefIsNull(RefIsNull* curr) { curr->finalize(); }
 void ReFinalize::visitRefFunc(RefFunc* curr) {
   // TODO: should we look up the function and update the type from there? This
   // could handle a change to the function's type, but is also not really what
@@ -164,6 +164,7 @@ void ReFinalize::visitStructNew(StructNew* curr) { curr->finalize(); }
 void ReFinalize::visitStructGet(StructGet* curr) { curr->finalize(); }
 void ReFinalize::visitStructSet(StructSet* curr) { curr->finalize(); }
 void ReFinalize::visitArrayNew(ArrayNew* curr) { curr->finalize(); }
+void ReFinalize::visitArrayNewSeg(ArrayNewSeg* curr) { curr->finalize(); }
 void ReFinalize::visitArrayInit(ArrayInit* curr) { curr->finalize(); }
 void ReFinalize::visitArrayGet(ArrayGet* curr) { curr->finalize(); }
 void ReFinalize::visitArraySet(ArraySet* curr) { curr->finalize(); }
@@ -186,15 +187,6 @@ void ReFinalize::visitStringIterMove(StringIterMove* curr) { curr->finalize(); }
 void ReFinalize::visitStringSliceWTF(StringSliceWTF* curr) { curr->finalize(); }
 void ReFinalize::visitStringSliceIter(StringSliceIter* curr) {
   curr->finalize();
-}
-
-void ReFinalize::visitFunction(Function* curr) {
-  // we may have changed the body from unreachable to none, which might be bad
-  // if the function has a return value
-  if (curr->getResults() != Type::none && curr->body->type == Type::none) {
-    Builder builder(*getModule());
-    curr->body = builder.blockify(curr->body, builder.makeUnreachable());
-  }
 }
 
 void ReFinalize::visitExport(Export* curr) { WASM_UNREACHABLE("unimp"); }

@@ -19,15 +19,11 @@
 
 #include "ir/branch-utils.h"
 #include "ir/eh-utils.h"
+#include "ir/local-graph.h"
 #include "ir/module-utils.h"
 #include "ir/possible-contents.h"
-#include "wasm.h"
-
-#ifdef POSSIBLE_CONTENTS_INSERT_ORDERED
-// Use an insert-ordered set for easier debugging with deterministic queue
-// ordering.
 #include "support/insert_ordered.h"
-#endif
+#include "wasm.h"
 
 namespace std {
 
@@ -41,95 +37,230 @@ std::ostream& operator<<(std::ostream& stream,
 
 namespace wasm {
 
-void PossibleContents::combine(const PossibleContents& other) {
-  auto type = getType();
-  auto otherType = other.getType();
+PossibleContents PossibleContents::combine(const PossibleContents& a,
+                                           const PossibleContents& b) {
+  auto aType = a.getType();
+  auto bType = b.getType();
   // First handle the trivial cases of them being equal, or one of them is
   // None or Many.
-  if (*this == other) {
-    // Nulls are a special case, since they compare equal even if their type is
-    // different. We would like to make this function symmetric, that is, that
-    // combine(a, b) == combine(b, a) (otherwise, things can be odd and we could
-    // get nondeterminism in the flow analysis which does not have a
-    // determinstic order). To fix that, pick the LUB.
-    if (isNull()) {
-      assert(other.isNull());
-      auto lub = HeapType::getLeastUpperBound(type.getHeapType(),
-                                              otherType.getHeapType());
-      if (!lub) {
-        // TODO: Remove this workaround once we have bottom types to assign to
-        // null literals.
-        value = Many();
-        return;
-      }
-      value = Literal::makeNull(*lub);
-    }
-    return;
+  if (a == b) {
+    return a;
   }
-  if (other.isNone()) {
-    return;
+  if (b.isNone()) {
+    return a;
   }
-  if (isNone()) {
-    value = other.value;
-    return;
+  if (a.isNone()) {
+    return b;
   }
-  if (isMany()) {
-    return;
+  if (a.isMany()) {
+    return a;
   }
-  if (other.isMany()) {
-    value = Many();
-    return;
+  if (b.isMany()) {
+    return b;
   }
 
-  if (!type.isRef() || !otherType.isRef()) {
+  if (!aType.isRef() || !bType.isRef()) {
     // At least one is not a reference. The only possibility left for a useful
     // combination here is if they have the same type (since we've already ruled
     // out the case of them being equal). If they have the same type then
     // neither is a reference and we can emit an exact type (since subtyping is
     // not relevant for non-references).
-    if (type == otherType) {
-      value = ExactType(type);
+    if (aType == bType) {
+      return ExactType(aType);
     } else {
-      value = Many();
+      return Many();
     }
-    return;
   }
 
   // Special handling for references from here.
 
-  // Nulls are always equal to each other, even if their types differ.
-  if (isNull() || other.isNull()) {
-    // Only one of them can be null here, since we already checked if *this ==
-    // other, which would have been true had both been null.
-    assert(!isNull() || !other.isNull());
-    // If only one is a null, but the other's type is known exactly, then the
-    // combination is to add nullability (if the type is *not* known exactly,
-    // like for a global, then we cannot do anything useful here).
-    if (!isNull() && hasExactType()) {
-      value = ExactType(Type(type.getHeapType(), Nullable));
-      return;
-    } else if (!other.isNull() && other.hasExactType()) {
-      value = ExactType(Type(otherType.getHeapType(), Nullable));
-      return;
+  if (a.isNull() && b.isNull()) {
+    // These must be nulls in different hierarchies, otherwise a would have
+    // been handled by the `a == b` case above.
+    assert(aType != bType);
+    return Many();
+  }
+
+  auto lub = Type::getLeastUpperBound(aType, bType);
+  if (lub == Type::none) {
+    // The types are not in the same hierarchy.
+    return Many();
+  }
+
+  // From here we can assume there is a useful LUB.
+
+  // Nulls can be combined in by just adding nullability to a type.
+  if (a.isNull() || b.isNull()) {
+    // Only one of them can be null here, since we already handled the case
+    // where they were both null.
+    assert(!a.isNull() || !b.isNull());
+    // If only one is a null then we can use the type info from the b, and
+    // just add in nullability. For example, a literal of type T and a null
+    // becomes an exact type of T that allows nulls, and so forth.
+    auto mixInNull = [](ConeType cone) {
+      cone.type = Type(cone.type.getHeapType(), Nullable);
+      return cone;
+    };
+    if (!a.isNull()) {
+      return mixInNull(a.getCone());
+    } else if (!b.isNull()) {
+      return mixInNull(b.getCone());
     }
   }
 
-  if (hasExactType() && other.hasExactType() &&
-      type.getHeapType() == otherType.getHeapType()) {
-    // We know the types here exactly, and even the heap types match, but
-    // there is some other difference that prevents them from being 100%
-    // identical (for example, one might be an ExactType and the other a
-    // Literal; or both might be ExactTypes and only one might be nullable).
-    // In these cases we can emit a proper ExactType here, adding nullability
-    // if we need to.
-    value = ExactType(Type(
-      type.getHeapType(),
-      type.isNullable() || otherType.isNullable() ? Nullable : NonNullable));
+  // Find a ConeType that describes both inputs, using the shared ancestor which
+  // is the LUB. We need to find how big a cone we need: the cone must be big
+  // enough to contain both the inputs.
+  auto aDepth = a.getCone().depth;
+  auto bDepth = b.getCone().depth;
+  Index newDepth;
+  if (aDepth == FullDepth || bDepth == FullDepth) {
+    // At least one has full (infinite) depth, so we know the new depth must
+    // be the same.
+    newDepth = FullDepth;
+  } else {
+    // The depth we need under the lub is how far from the lub we are, plus
+    // the depth of our cone.
+    // TODO: we could make a single loop that also does the LUB, at the same
+    // time, and also avoids calling getDepth() which loops once more?
+    auto aDepthFromRoot = aType.getHeapType().getDepth();
+    auto bDepthFromRoot = bType.getHeapType().getDepth();
+    auto lubDepthFromRoot = lub.getHeapType().getDepth();
+    assert(lubDepthFromRoot <= aDepthFromRoot);
+    assert(lubDepthFromRoot <= bDepthFromRoot);
+    Index aDepthUnderLub = aDepthFromRoot - lubDepthFromRoot + aDepth;
+    Index bDepthUnderLub = bDepthFromRoot - lubDepthFromRoot + bDepth;
+
+    // The total cone must be big enough to contain all the above.
+    newDepth = std::max(aDepthUnderLub, bDepthUnderLub);
+  }
+
+  return ConeType{lub, newDepth};
+}
+
+void PossibleContents::intersectWithFullCone(const PossibleContents& other) {
+  assert(other.isFullConeType());
+
+  if (isSubContents(other, *this)) {
+    // The intersection is just |other|.
+    // Note that this code path handles |this| being Many.
+    value = other.value;
     return;
   }
 
-  // Nothing else possible combines in an interesting way; emit a Many.
-  value = Many();
+  if (!haveIntersection(*this, other)) {
+    // There is no intersection at all.
+    // Note that this code path handles |this| being None.
+    value = None();
+    return;
+  }
+
+  // There is an intersection here. Note that this implies |this| is a reference
+  // type, as it has an intersection with |other| which is a full cone type
+  // (which must be a reference type).
+  auto type = getType();
+  auto otherType = other.getType();
+  auto heapType = type.getHeapType();
+  auto otherHeapType = otherType.getHeapType();
+
+  // If both inputs are nullable then the intersection is nullable as well.
+  auto nullability =
+    type.isNullable() && otherType.isNullable() ? Nullable : NonNullable;
+
+  auto setNoneOrNull = [&]() {
+    if (nullability == Nullable) {
+      value = Literal::makeNull(otherHeapType);
+    } else {
+      value = None();
+    }
+  };
+
+  if (isNull()) {
+    // The intersection is either this null itself, or nothing if a null is not
+    // allowed.
+    setNoneOrNull();
+    return;
+  }
+
+  // If the heap types are not compatible then they are in separate hierarchies
+  // and there is no intersection, aside from possibly a null of the bottom
+  // type.
+  auto isSubType = HeapType::isSubType(heapType, otherHeapType);
+  auto otherIsSubType = HeapType::isSubType(otherHeapType, heapType);
+  if (!isSubType && !otherIsSubType) {
+    if (nullability == Nullable &&
+        heapType.getBottom() == otherHeapType.getBottom()) {
+      value = Literal::makeNull(heapType.getBottom());
+    } else {
+      value = None();
+    }
+    return;
+  }
+
+  if (isLiteral() || isGlobal()) {
+    // The information about the value being identical to a particular literal
+    // or immutable global is not removed by intersection, if the type is in the
+    // cone we are intersecting with.
+    if (isSubType) {
+      return;
+    }
+
+    // The type must change, so continue down to the generic code path.
+    // TODO: for globals we could perhaps refine the type here, but then the
+    //       type on GlobalInfo would not match the module, so that needs some
+    //       refactoring.
+  }
+
+  // Intersect the cones, as there is no more specific information we can use.
+  auto depthFromRoot = heapType.getDepth();
+  auto otherDepthFromRoot = otherHeapType.getDepth();
+
+  // To compute the new cone, find the new heap type for it, and to compute its
+  // depth, consider the adjustments to the existing depths that stem from the
+  // choice of new heap type.
+  HeapType newHeapType;
+
+  if (depthFromRoot < otherDepthFromRoot) {
+    newHeapType = otherHeapType;
+  } else {
+    newHeapType = heapType;
+  }
+
+  auto newType = Type(newHeapType, nullability);
+
+  // By assumption |other| has full depth. Consider the other cone in |this|.
+  if (hasFullCone()) {
+    // Both are full cones, so the result is as well.
+    value = FullConeType(newType);
+  } else {
+    // The result is a partial cone. If the cone starts in |otherHeapType| then
+    // we need to adjust the depth down, since it will be smaller than the
+    // original cone:
+    /*
+    //                             ..
+    //                            /
+    //              otherHeapType
+    //            /               \
+    //   heapType                  ..
+    //            \
+    */
+    // E.g. if |this| is a cone of depth 10, and |otherHeapType| is an immediate
+    // subtype of |this|, then the new cone must be of depth 9.
+    auto newDepth = getCone().depth;
+    if (newHeapType == otherHeapType) {
+      assert(depthFromRoot <= otherDepthFromRoot);
+      auto reduction = otherDepthFromRoot - depthFromRoot;
+      if (reduction > newDepth) {
+        // The cone on heapType does not even reach the cone on otherHeapType,
+        // so the result is not a cone.
+        setNoneOrNull();
+        return;
+      }
+      newDepth -= reduction;
+    }
+
+    value = ConeType{newType, newDepth};
+  }
 }
 
 bool PossibleContents::haveIntersection(const PossibleContents& a,
@@ -156,43 +287,77 @@ bool PossibleContents::haveIntersection(const PossibleContents& a,
 
   // From here on we focus on references.
 
-  if (aType.isNullable() && bType.isNullable()) {
-    // Null is possible on both sides. Assume that an intersection can exist,
-    // but we could be more precise here and check if the types belong to
-    // different hierarchies, in which case the nulls would differ TODO. For
-    // now we only use this API from the RefEq logic, so this is fully precise.
+  auto aHeapType = aType.getHeapType();
+  auto bHeapType = bType.getHeapType();
+
+  if (aType.isNullable() && bType.isNullable() &&
+      aHeapType.getBottom() == bHeapType.getBottom()) {
+    // A compatible null is possible on both sides.
     return true;
   }
 
-  // We ruled out a null on both sides, so at least one is non-nullable. If the
-  // other is a null then no chance for an intersection remains.
+  // We ruled out having a compatible null on both sides. If one is simply a
+  // null then no chance for an intersection remains.
   if (a.isNull() || b.isNull()) {
+    return false;
+  }
+
+  auto aSubB = HeapType::isSubType(aHeapType, bHeapType);
+  auto bSubA = HeapType::isSubType(bHeapType, aHeapType);
+  if (!aSubB && !bSubA) {
+    // No type can appear in both a and b, so the types differ, so the values
+    // do not overlap.
     return false;
   }
 
   // From here on we focus on references and can ignore the case of null - any
   // intersection must be of a non-null value, so we can focus on the heap
   // types.
-  auto aHeapType = aType.getHeapType();
-  auto bHeapType = bType.getHeapType();
 
-  if (a.hasExactType() && b.hasExactType() && aHeapType != bHeapType) {
-    // The values must be different since their types are different.
-    return false;
-  }
+  auto aDepthFromRoot = aHeapType.getDepth();
+  auto bDepthFromRoot = bHeapType.getDepth();
 
-  if (!HeapType::isSubType(aHeapType, bHeapType) &&
-      !HeapType::isSubType(bHeapType, aHeapType)) {
-    // No type can appear in both a and b, so the types differ, so the values
-    // differ.
-    return false;
+  if (aSubB) {
+    // A is a subtype of B. For there to be an intersection we need their cones
+    // to intersect, that is, to rule out the case where the cone from B is not
+    // deep enough to reach A.
+    assert(aDepthFromRoot >= bDepthFromRoot);
+    return aDepthFromRoot - bDepthFromRoot <= b.getCone().depth;
+  } else if (bSubA) {
+    assert(bDepthFromRoot >= aDepthFromRoot);
+    return bDepthFromRoot - aDepthFromRoot <= a.getCone().depth;
+  } else {
+    WASM_UNREACHABLE("we ruled out no subtyping before");
   }
 
   // TODO: we can also optimize things like different Literals, but existing
   //       passes do such things already so it is low priority.
+}
 
-  // It appears they can intersect.
-  return true;
+bool PossibleContents::isSubContents(const PossibleContents& a,
+                                     const PossibleContents& b) {
+  // TODO: Everything else. For now we only call this when |a| or |b| is a full
+  //       cone type.
+  if (b.isFullConeType()) {
+    if (a.isNone()) {
+      return true;
+    }
+    if (a.isMany()) {
+      return false;
+    }
+    if (a.isNull()) {
+      return b.getType().isNullable();
+    }
+    return Type::isSubType(a.getType(), b.getType());
+  }
+
+  if (a.isFullConeType()) {
+    // We've already ruled out b being a full cone type before, so the only way
+    // |a| can be contained in |b| is if |b| is everything.
+    return b.isMany();
+  }
+
+  WASM_UNREACHABLE("a or b must be a full cone");
 }
 
 namespace {
@@ -226,7 +391,8 @@ template<typename T> void disallowDuplicates(const T& targets) {
 
 // A link indicates a flow of content from one location to another. For
 // example, if we do a local.get and return that value from a function, then
-// we have a link from a LocalLocation to a ResultLocation.
+// we have a link from the ExpressionLocation of that local.get to a
+// ResultLocation.
 template<typename T> struct Link {
   T from;
   T to;
@@ -321,12 +487,6 @@ struct InfoCollector
           return true;
         }
       }
-    }
-    if (type.isRef() && getTypeSystem() != TypeSystem::Nominal &&
-        getTypeSystem() != TypeSystem::Isorecursive) {
-      // We need explicit supers in the SubTyping helper class. Without that,
-      // cannot handle refs, and consider them irrelevant.
-      return false;
     }
     return true;
   }
@@ -427,7 +587,7 @@ struct InfoCollector
       curr,
       PossibleContents::literal(Literal::makeNull(curr->type.getHeapType())));
   }
-  void visitRefIs(RefIs* curr) {
+  void visitRefIsNull(RefIsNull* curr) {
     // TODO: Optimize when possible. For example, if we can infer an exact type
     //       here which allows us to know the result then we should do so. This
     //       is unlike the case in visitUnary, above: the information that lets
@@ -447,7 +607,7 @@ struct InfoCollector
     auto* func = getModule()->getFunction(curr->func);
     for (Index i = 0; i < func->getParams().size(); i++) {
       info.links.push_back(
-        {SignatureParamLocation{func->type, i}, LocalLocation{func, i, 0}});
+        {SignatureParamLocation{func->type, i}, ParamLocation{func, i}});
     }
     for (Index i = 0; i < func->getResults().size(); i++) {
       info.links.push_back(
@@ -489,9 +649,7 @@ struct InfoCollector
     addRoot(curr);
   }
 
-  void visitRefCast(RefCast* curr) {
-    addChildParentLink(curr->ref, curr);
-  }
+  void visitRefCast(RefCast* curr) { receiveChildValue(curr->ref, curr); }
   void visitRefTest(RefTest* curr) { addRoot(curr); }
   void visitBrOn(BrOn* curr) {
     // TODO: optimize when possible
@@ -499,32 +657,32 @@ struct InfoCollector
     receiveChildValue(curr->ref, curr);
   }
   void visitRefAs(RefAs* curr) {
-    // TODO: optimize when possible: like RefCast, not all values flow through.
+    if (curr->op == ExternExternalize || curr->op == ExternInternalize) {
+      // The external conversion ops emit something of a completely different
+      // type, which we must mark as a root.
+      addRoot(curr);
+      return;
+    }
+
+    // All other RefAs operations flow values through while refining them (the
+    // filterExpressionContents method will handle the refinement
+    // automatically).
     receiveChildValue(curr->value, curr);
   }
 
-  // Locals read and write to their index.
-  // TODO: we could use a LocalGraph for SSA-like precision
-  void visitLocalGet(LocalGet* curr) {
-    if (isRelevant(curr->type)) {
-      for (Index i = 0; i < curr->type.size(); i++) {
-        info.links.push_back({LocalLocation{getFunction(), curr->index, i},
-                              ExpressionLocation{curr, i}});
-      }
-    }
-  }
   void visitLocalSet(LocalSet* curr) {
     if (!isRelevant(curr->value->type)) {
       return;
     }
-    for (Index i = 0; i < curr->value->type.size(); i++) {
-      info.links.push_back({ExpressionLocation{curr->value, i},
-                            LocalLocation{getFunction(), curr->index, i}});
-    }
 
-    // Tees also flow out the value (receiveChildValue will see if this is a tee
+    // Tees flow out the value (receiveChildValue will see if this is a tee
     // based on the type, automatically).
     receiveChildValue(curr->value, curr);
+
+    // We handle connecting local.gets to local.sets below, in visitFunction.
+  }
+  void visitLocalGet(LocalGet* curr) {
+    // We handle connecting local.gets to local.sets below, in visitFunction.
   }
 
   // Globals read and write from their location.
@@ -591,7 +749,7 @@ struct InfoCollector
       curr,
       [&](Index i) {
         assert(i <= target->getParams().size());
-        return LocalLocation{target, i, 0};
+        return ParamLocation{target, i};
       },
       [&](Index i) {
         assert(i <= target->getResults().size());
@@ -599,6 +757,12 @@ struct InfoCollector
       });
   }
   template<typename T> void handleIndirectCall(T* curr, HeapType targetType) {
+    // If the heap type is not a signature, which is the case for a bottom type
+    // (null) then nothing can be called.
+    if (!targetType.isSignature()) {
+      assert(targetType.isBottom());
+      return;
+    }
     handleCall(
       curr,
       [&](Index i) {
@@ -646,7 +810,7 @@ struct InfoCollector
       // We can't see where this goes. We must be pessimistic and assume it
       // can call anything of the proper type, the same as a CallRef. (We could
       // look at the possible contents of |target| during the flow, but that
-      // would require special logic like we have for RefCast etc., and the
+      // would require special logic like we have for StructGet etc., and the
       // intrinsics will be lowered away anyhow, so just running after that is
       // a workaround.)
       handleIndirectCall(curr, target->type);
@@ -725,6 +889,27 @@ struct InfoCollector
     }
     addRoot(curr, PossibleContents::exactType(curr->type));
   }
+  void visitArrayNewSeg(ArrayNewSeg* curr) {
+    if (curr->type == Type::unreachable) {
+      return;
+    }
+    addRoot(curr, PossibleContents::exactType(curr->type));
+    auto heapType = curr->type.getHeapType();
+    switch (curr->op) {
+      case NewData: {
+        Type elemType = heapType.getArray().element.type;
+        addRoot(DataLocation{heapType, 0},
+                PossibleContents::fromType(elemType));
+        return;
+      }
+      case NewElem: {
+        Type segType = getModule()->elementSegments[curr->segment]->type;
+        addRoot(DataLocation{heapType, 0}, PossibleContents::fromType(segType));
+        return;
+      }
+    }
+    WASM_UNREACHABLE("unexpected op");
+  }
   void visitArrayInit(ArrayInit* curr) {
     if (curr->type == Type::unreachable) {
       return;
@@ -797,7 +982,8 @@ struct InfoCollector
     // part of the main IR, which is potentially confusing during debugging,
     // however, which is a downside.
     Builder builder(*getModule());
-    auto* get = builder.makeArrayGet(curr->srcRef, curr->srcIndex);
+    auto* get =
+      builder.makeArrayGet(curr->srcRef, curr->srcIndex, curr->srcRef->type);
     visitArrayGet(get);
     auto* set = builder.makeArraySet(curr->destRef, curr->destIndex, get);
     visitArraySet(set);
@@ -939,26 +1125,41 @@ struct InfoCollector
 
   void visitReturn(Return* curr) { addResult(curr->value); }
 
-  void visitFunction(Function* curr) {
-    // Vars have an initial value.
-    for (Index i = 0; i < curr->getNumLocals(); i++) {
-      if (curr->isVar(i)) {
-        Index j = 0;
-        for (auto t : curr->getLocalType(i)) {
-          if (t.isDefaultable()) {
-            info.links.push_back(
-              {getNullLocation(t), LocalLocation{curr, i, j}});
-          }
-          j++;
-        }
-      }
-    }
-
+  void visitFunction(Function* func) {
     // Functions with a result can flow a value out from their body.
-    addResult(curr->body);
+    addResult(func->body);
 
     // See visitPop().
     assert(handledPops == totalPops);
+
+    // Handle local.get/sets: each set must write to the proper gets.
+    LocalGraph localGraph(func);
+
+    for (auto& [get, setsForGet] : localGraph.getSetses) {
+      auto index = get->index;
+      auto type = func->getLocalType(index);
+      if (!isRelevant(type)) {
+        continue;
+      }
+
+      // Each get reads from its relevant sets.
+      for (auto* set : setsForGet) {
+        for (Index i = 0; i < type.size(); i++) {
+          Location source;
+          if (set) {
+            // This is a normal local.set.
+            source = ExpressionLocation{set->value, i};
+          } else if (getFunction()->isParam(index)) {
+            // This is a parameter.
+            source = ParamLocation{getFunction(), index};
+          } else {
+            // This is the default value from the function entry, a null.
+            source = getNullLocation(type[i]);
+          }
+          info.links.push_back({source, ExpressionLocation{get, i}});
+        }
+      }
+    }
   }
 
   // Helpers
@@ -1018,7 +1219,11 @@ struct InfoCollector
   // verbose code).
   void addRoot(Expression* curr,
                PossibleContents contents = PossibleContents::many()) {
+    // TODO Use a cone type here when relevant
     if (isRelevant(curr)) {
+      if (contents.isMany()) {
+        contents = PossibleContents::fromType(curr->type);
+      }
       addRoot(ExpressionLocation{curr, 0}, contents);
     }
   }
@@ -1126,11 +1331,19 @@ private:
   // possible is helpful as anything reading them meanwhile (before we get to
   // their work item in the queue) will see the newer value, possibly avoiding
   // flowing an old value that would later be overwritten.
-#ifdef POSSIBLE_CONTENTS_INSERT_ORDERED
+  //
+  // This must be ordered to avoid nondeterminism. The problem is that our
+  // operations are imprecise and so the transitive property does not hold:
+  // (AvB)vC may differ from Av(BvC). Likewise (AvB)^C may differ from
+  // (A^C)v(B^C). An example of the latter is if a location is sent a null func
+  // and an i31, and the location can only contain funcref. If the null func
+  // arrives first, then later we'd merge null func + i31 which ends up as Many,
+  // and then we filter that to funcref and get funcref. But if the i31 arrived
+  // first, we'd filter it into nothing, and then the null func that arrives
+  // later would be the final result. This would not happen if our operations
+  // were precise, but we only make approximations here to avoid unacceptable
+  // overhead, such as cone types but not arbitrary unions, etc.
   InsertOrderedSet<LocationIndex> workQueue;
-#else
-  std::unordered_set<LocationIndex> workQueue;
-#endif
 
   // All existing links in the graph. We keep this to know when a link we want
   // to add is new or not.
@@ -1170,8 +1383,13 @@ private:
   // exists it is not added.
   void connectDuringFlow(Location from, Location to);
 
-  // Contents sent to a global location can be filtered in a special way during
-  // the flow, which is handled in this helper.
+  // Contents sent to certain locations can be filtered in a special way during
+  // the flow, which is handled in these helpers. These may update
+  // |worthSendingMore| which is whether it is worth sending any more content to
+  // this location in the future.
+  void filterExpressionContents(PossibleContents& contents,
+                                const ExpressionLocation& exprLoc,
+                                bool& worthSendingMore);
   void filterGlobalContents(PossibleContents& contents,
                             const GlobalLocation& globalLoc);
 
@@ -1180,7 +1398,7 @@ private:
   // in the reference the read receives, and the read instruction itself. We
   // compute where we need to read from based on the type and the ref contents
   // and get that data, adding new links in the graph as needed.
-  void readFromData(HeapType declaredHeapType,
+  void readFromData(Type declaredType,
                     Index fieldIndex,
                     const PossibleContents& refContents,
                     Expression* read);
@@ -1188,12 +1406,32 @@ private:
   // Similar to readFromData, but does a write for a struct.set or array.set.
   void writeToData(Expression* ref, Expression* value, Index fieldIndex);
 
-  // Special handling for RefCast during the flow: RefCast only admits valid
-  // values to flow through it.
-  void flowRefCast(const PossibleContents& contents, RefCast* cast);
-
   // We will need subtypes during the flow, so compute them once ahead of time.
   std::unique_ptr<SubTypes> subTypes;
+
+  // The depth of children for each type. This is 0 if the type has no
+  // subtypes, 1 if it has subtypes but none of those have subtypes themselves,
+  // and so forth.
+  std::unordered_map<HeapType, Index> maxDepths;
+
+  // Given a ConeType, return the normalized depth, that is, the canonical depth
+  // given the actual children it has. If this is a full cone, then we can
+  // always pick the actual maximal depth and use that instead of FullDepth==-1.
+  // For a non-full cone, we also reduce the depth as much as possible, so it is
+  // equal to the maximum depth of an existing subtype.
+  Index getNormalizedConeDepth(Type type, Index depth) {
+    return std::min(depth, maxDepths[type.getHeapType()]);
+  }
+
+  void normalizeConeType(PossibleContents& cone) {
+    assert(cone.isConeType());
+    auto type = cone.getType();
+    auto before = cone.getCone().depth;
+    auto normalized = getNormalizedConeDepth(type, before);
+    if (normalized != before) {
+      cone = PossibleContents::coneType(type, normalized);
+    }
+  }
 
 #if defined(POSSIBLE_CONTENTS_DEBUG) && POSSIBLE_CONTENTS_DEBUG >= 2
   // Dump out a location for debug purposes.
@@ -1213,8 +1451,10 @@ Flower::Flower(Module& wasm) : wasm(wasm) {
 
       if (func->imported()) {
         // Imports return unknown values.
-        for (Index i = 0; i < func->getResults().size(); i++) {
-          finder.addRoot(ResultLocation{func, i}, PossibleContents::many());
+        auto results = func->getResults();
+        for (Index i = 0; i < results.size(); i++) {
+          finder.addRoot(ResultLocation{func, i},
+                         PossibleContents::fromType(results[i]));
         }
         return;
       }
@@ -1237,7 +1477,8 @@ Flower::Flower(Module& wasm) : wasm(wasm) {
   for (auto& global : wasm.globals) {
     if (global->imported()) {
       // Imports are unknown values.
-      finder.addRoot(GlobalLocation{global->name}, PossibleContents::many());
+      finder.addRoot(GlobalLocation{global->name},
+                     PossibleContents::fromType(global->type));
       continue;
     }
     auto* init = global->init;
@@ -1291,8 +1532,9 @@ Flower::Flower(Module& wasm) : wasm(wasm) {
   // that we can't see, so anything might arrive there.
   auto calledFromOutside = [&](Name funcName) {
     auto* func = wasm.getFunction(funcName);
+    auto params = func->getParams();
     for (Index i = 0; i < func->getParams().size(); i++) {
-      roots[LocalLocation{func, i, 0}] = PossibleContents::many();
+      roots[ParamLocation{func, i}] = PossibleContents::fromType(params[i]);
     }
   };
 
@@ -1323,8 +1565,9 @@ Flower::Flower(Module& wasm) : wasm(wasm) {
       // Exported mutable globals are roots, since the outside may write any
       // value to them.
       auto name = ex->value;
-      if (wasm.getGlobal(name)->mutable_) {
-        roots[GlobalLocation{name}] = PossibleContents::many();
+      auto* global = wasm.getGlobal(name);
+      if (global->mutable_) {
+        roots[GlobalLocation{name}] = PossibleContents::fromType(global->type);
       }
     }
   }
@@ -1333,10 +1576,8 @@ Flower::Flower(Module& wasm) : wasm(wasm) {
   std::cout << "struct phase\n";
 #endif
 
-  if (getTypeSystem() == TypeSystem::Nominal ||
-      getTypeSystem() == TypeSystem::Isorecursive) {
-    subTypes = std::make_unique<SubTypes>(wasm);
-  }
+  subTypes = std::make_unique<SubTypes>(wasm);
+  maxDepths = subTypes->getMaxDepths();
 
 #ifdef POSSIBLE_CONTENTS_DEBUG
   std::cout << "Link-targets phase\n";
@@ -1422,38 +1663,62 @@ bool Flower::updateContents(LocationIndex locationIndex,
 
   // It is not worth sending any more to this location if we are now in the
   // worst possible case, as no future value could cause any change.
-  //
-  // Many is always the worst possible case. A cone type of a non-reference is
-  // also the worst case, since subtyping is not relevant there, and so if we
-  // only know something about the type then we already know nothing beyond what
-  // the type in the wasm tells us (and from there we can only go to Many).
-  bool worthSendingMore = !contents.isMany();
-  if (!contents.getType().isRef() && contents.isConeType()) {
-    worthSendingMore = false;
+  bool worthSendingMore = true;
+  if (contents.isConeType()) {
+    if (!contents.getType().isRef()) {
+      // A cone type of a non-reference is the worst case, since subtyping is
+      // not relevant there, and so if we only know something about the type
+      // then we already know nothing beyond what the type in the wasm tells us
+      // (and from there we can only go to Many).
+      worthSendingMore = false;
+    } else {
+      // Normalize all reference cones. There is never a point to flow around
+      // anything non-normalized, which might lead to extra work. For example,
+      // if A has no subtypes, then a full cone for A is really the same as one
+      // with depth 0 (an exact type). And we don't want to see the full cone
+      // arrive and think it was an improvement over the one with depth 0 and do
+      // more flowing based on that.
+      normalizeConeType(contents);
+    }
   }
 
-  // Check if anything changed. Note that we check not just the content but
-  // also its type. That handles the case of nulls, that compare equal even if
-  // their type differs. We want to keep flowing if the type can change, so that
-  // we always end up with a deterministic result no matter in what order the
-  // flow happens (the final result will be the LUB of all the types of nulls
-  // that can arrive).
-  if (contents == oldContents && contents.getType() == oldContents.getType()) {
+  // Check if anything changed.
+  if (contents == oldContents) {
     // Nothing actually changed, so just return.
     return worthSendingMore;
   }
 
   // Handle special cases: Some locations can only contain certain contents, so
   // filter accordingly.
-  if (auto* globalLoc =
-        std::get_if<GlobalLocation>(&getLocation(locationIndex))) {
+  auto location = getLocation(locationIndex);
+  bool filtered = false;
+  if (auto* exprLoc = std::get_if<ExpressionLocation>(&location)) {
+    // TODO: Replace this with specific filterFoo or flowBar methods like we
+    //       have for filterGlobalContents. That could save a little wasted work
+    //       here. Might be best to do that after the spec is fully stable.
+    filterExpressionContents(contents, *exprLoc, worthSendingMore);
+    filtered = true;
+  } else if (auto* globalLoc = std::get_if<GlobalLocation>(&location)) {
     filterGlobalContents(contents, *globalLoc);
-    if (contents == oldContents &&
-        contents.getType() == oldContents.getType()) {
-      // Nothing actually changed after filtering, so just return.
+    filtered = true;
+  }
+
+  // Check if anything changed after filtering, if we did so.
+  if (filtered) {
+#if defined(POSSIBLE_CONTENTS_DEBUG) && POSSIBLE_CONTENTS_DEBUG >= 2
+    std::cout << "  filtered contents:\n";
+    contents.dump(std::cout, &wasm);
+    std::cout << '\n';
+#endif
+
+    if (contents == oldContents) {
       return worthSendingMore;
     }
   }
+
+  // After filtering we should always have more precise information than "many"
+  // - in the worst case, we can have the type declared in the wasm.
+  assert(!contents.isMany());
 
 #if defined(POSSIBLE_CONTENTS_DEBUG) && POSSIBLE_CONTENTS_DEBUG >= 2
   std::cout << "  updateContents has something new\n";
@@ -1500,8 +1765,7 @@ void Flower::flowAfterUpdate(LocationIndex locationIndex) {
     // This is indeed one of the special cases where it is the child of a
     // parent, and we need to do some special handling because of that child-
     // parent connection.
-    auto* child = exprLoc->expr;
-    WASM_UNUSED(child);
+    [[maybe_unused]] auto* child = exprLoc->expr;
     auto parentIndex = iter->second;
     auto* parent = std::get<ExpressionLocation>(getLocation(parentIndex)).expr;
 
@@ -1512,20 +1776,17 @@ void Flower::flowAfterUpdate(LocationIndex locationIndex) {
     if (auto* get = parent->dynCast<StructGet>()) {
       // |child| is the reference child of a struct.get.
       assert(get->ref == child);
-      readFromData(get->ref->type.getHeapType(), get->index, contents, get);
+      readFromData(get->ref->type, get->index, contents, get);
     } else if (auto* set = parent->dynCast<StructSet>()) {
       // |child| is either the reference or the value child of a struct.set.
       assert(set->ref == child || set->value == child);
       writeToData(set->ref, set->value, set->index);
     } else if (auto* get = parent->dynCast<ArrayGet>()) {
       assert(get->ref == child);
-      readFromData(get->ref->type.getHeapType(), 0, contents, get);
+      readFromData(get->ref->type, 0, contents, get);
     } else if (auto* set = parent->dynCast<ArraySet>()) {
       assert(set->ref == child || set->value == child);
       writeToData(set->ref, set->value, 0);
-    } else if (auto* cast = parent->dynCast<RefCast>()) {
-      assert(cast->ref == child);
-      flowRefCast(contents, cast);
     } else {
       // TODO: ref.test and all other casts can be optimized (see the cast
       //       helper code used in OptimizeInstructions and RemoveUnusedBrs)
@@ -1582,6 +1843,68 @@ void Flower::connectDuringFlow(Location from, Location to) {
   }
 }
 
+void Flower::filterExpressionContents(PossibleContents& contents,
+                                      const ExpressionLocation& exprLoc,
+                                      bool& worthSendingMore) {
+  auto type = exprLoc.expr->type;
+  if (!type.isRef()) {
+    return;
+  }
+
+  // The caller cannot know of a situation where it might not be worth sending
+  // more to a reference - all that logic is in here. That is, the rest of this
+  // function is the only place we can mark |worthSendingMore| as false for a
+  // reference.
+  assert(worthSendingMore);
+
+  // The maximal contents here are the declared type and all subtypes. Nothing
+  // else can pass through, so filter such things out.
+  auto maximalContents = PossibleContents::fullConeType(type);
+  contents.intersectWithFullCone(maximalContents);
+  if (contents.isNone()) {
+    // Nothing was left here at all.
+    return;
+  }
+
+  // Normalize the intersection. We want to check later if any more content can
+  // arrive here, and also we want to avoid flowing around anything non-
+  // normalized, as explained earlier.
+  //
+  // Note that this normalization is necessary even though |contents| was
+  // normalized before the intersection, e.g.:
+  /*
+  //      A
+  //     / \
+  //    B   C
+  //        |
+  //        D
+  */
+  // Consider the case where |maximalContents| is Cone(B, Infinity) and the
+  // original |contents| was Cone(A, 2) (which is normalized). The naive
+  // intersection is Cone(B, 1), since the core intersection logic makes no
+  // assumptions about the rest of the types. That is then normalized to
+  // Cone(B, 0) since there happens to be no subtypes for B.
+  //
+  // Note that the intersection may also not be a cone type, if it is a global
+  // or literal. In that case we don't have anything more to do here.
+  if (!contents.isConeType()) {
+    return;
+  }
+
+  normalizeConeType(contents);
+
+  // There is a chance that the intersection is equal to the maximal contents,
+  // which would mean nothing more can arrive here. (Note that we can't
+  // normalize |maximalContents| before the intersection as
+  // intersectWithFullCone assumes a full/infinite cone.)
+  normalizeConeType(maximalContents);
+
+  if (contents == maximalContents) {
+    // We already contain everything possible, so this is the worst case.
+    worthSendingMore = false;
+  }
+}
+
 void Flower::filterGlobalContents(PossibleContents& contents,
                                   const GlobalLocation& globalLoc) {
   auto* global = wasm.getGlobal(globalLoc.name);
@@ -1610,10 +1933,17 @@ void Flower::filterGlobalContents(PossibleContents& contents,
   }
 }
 
-void Flower::readFromData(HeapType declaredHeapType,
+void Flower::readFromData(Type declaredType,
                           Index fieldIndex,
                           const PossibleContents& refContents,
                           Expression* read) {
+#ifndef NDEBUG
+  // We must not have anything in the reference that is invalid for the wasm
+  // type there.
+  auto maximalContents = PossibleContents::fullConeType(declaredType);
+  assert(PossibleContents::isSubContents(refContents, maximalContents));
+#endif
+
   // The data that a struct.get reads depends on two things: the reference that
   // we read from, and the relevant DataLocations. The reference determines
   // which DataLocations are relevant: if it is an exact type then we have a
@@ -1641,16 +1971,10 @@ void Flower::readFromData(HeapType declaredHeapType,
   // future.
 
   if (refContents.isNull() || refContents.isNone()) {
-    // Nothing is read here.
-    return;
-  }
-
-  if (refContents.isLiteral()) {
-    // The only reference literals we have are nulls (handled above) and
-    // ref.func. ref.func will trap in struct|array.get, so nothing will be read
-    // here (when we finish optimizing all instructions like BrOn then
-    // ref.funcs should get filtered out before arriving here TODO).
-    assert(refContents.getType().isFunction());
+    // Nothing is read here as this is either a null or unreachable code. (Note
+    // that the contents must be a subtype of the wasm type, which rules out
+    // other possibilities like a non-null literal such as an integer or a
+    // function reference.)
     return;
   }
 
@@ -1658,51 +1982,61 @@ void Flower::readFromData(HeapType declaredHeapType,
   std::cout << "    add special reads\n";
 #endif
 
-  if (refContents.hasExactType()) {
-    // Add a single link to the exact location the reference points to.
-    connectDuringFlow(
-      DataLocation{refContents.getType().getHeapType(), fieldIndex},
-      ExpressionLocation{read, 0});
-  } else {
-    // Otherwise, this is a true cone (i.e., it has a depth > 0): the declared
-    // type of the reference or some of its subtypes.
-    // TODO: The Global case may have a different cone type than the heapType,
-    //       which we could use here.
-    // TODO: A Global may refer to an immutable global, which we can read the
-    //       field from potentially (reading it from the struct.new/array.new
-    //       in the definition of it, if it is not imported; or, we could track
-    //       the contents of immutable fields of allocated objects, and not just
-    //       represent them as an exact type).
-    //       See the test TODO with text "We optimize some of this, but stop at
-    //       reading from the immutable global"
-    assert(refContents.isMany() || refContents.isGlobal());
+  // The only possibilities left are a cone type (the worst case is where the
+  // cone matches the wasm type), or a global.
+  //
+  // TODO: The Global case may have a different cone type than the heapType,
+  //       which we could use here.
+  // TODO: A Global may refer to an immutable global, which we can read the
+  //       field from potentially (reading it from the struct.new/array.new
+  //       in the definition of it, if it is not imported; or, we could track
+  //       the contents of immutable fields of allocated objects, and not just
+  //       represent them as an exact type).
+  //       See the test TODO with text "We optimize some of this, but stop at
+  //       reading from the immutable global"
+  assert(refContents.isGlobal() || refContents.isConeType());
 
-    // We create a ConeReadLocation for the canonical cone of this type, to
-    // avoid bloating the graph, see comment on ConeReadLocation().
-    // TODO: A cone with no subtypes needs no canonical location, just
-    //       add one direct link here.
-    auto coneReadLocation = ConeReadLocation{declaredHeapType, fieldIndex};
-    if (!hasIndex(coneReadLocation)) {
-      // This is the first time we use this location, so create the links for it
-      // in the graph.
-      for (auto type : subTypes->getAllSubTypes(declaredHeapType)) {
+  // Just look at the cone here, discarding information about this being a
+  // global, if it was one. All that matters from now is the cone. We also
+  // normalize the cone to avoid wasted work later.
+  auto cone = refContents.getCone();
+  auto normalizedDepth = getNormalizedConeDepth(cone.type, cone.depth);
+
+  // We create a ConeReadLocation for the canonical cone of this type, to
+  // avoid bloating the graph, see comment on ConeReadLocation().
+  auto coneReadLocation =
+    ConeReadLocation{cone.type.getHeapType(), normalizedDepth, fieldIndex};
+  if (!hasIndex(coneReadLocation)) {
+    // This is the first time we use this location, so create the links for it
+    // in the graph.
+    subTypes->iterSubTypes(
+      cone.type.getHeapType(),
+      normalizedDepth,
+      [&](HeapType type, Index depth) {
         connectDuringFlow(DataLocation{type, fieldIndex}, coneReadLocation);
-      }
+      });
 
-      // TODO: if the old contents here were an exact type then we have an old
-      //       link here that we could remove as it is redundant (the cone
-      //       contains the exact type among the others). But removing links
-      //       is not efficient, so maybe not worth it.
-    }
-
-    // Link to the canonical location.
-    connectDuringFlow(coneReadLocation, ExpressionLocation{read, 0});
+    // TODO: we can end up with redundant links here if we see one cone first
+    //       and then a larger one later. But removing links is not efficient,
+    //       so for now just leave that.
   }
+
+  // Link to the canonical location.
+  connectDuringFlow(coneReadLocation, ExpressionLocation{read, 0});
 }
 
 void Flower::writeToData(Expression* ref, Expression* value, Index fieldIndex) {
 #if defined(POSSIBLE_CONTENTS_DEBUG) && POSSIBLE_CONTENTS_DEBUG >= 2
   std::cout << "    add special writes\n";
+#endif
+
+  auto refContents = getContents(getIndex(ExpressionLocation{ref, 0}));
+
+#ifndef NDEBUG
+  // We must not have anything in the reference that is invalid for the wasm
+  // type there.
+  auto maximalContents = PossibleContents::fullConeType(ref->type);
+  assert(PossibleContents::isSubContents(refContents, maximalContents));
 #endif
 
   // We could set up links here as we do for reads, but as we get to this code
@@ -1726,65 +2060,25 @@ void Flower::writeToData(Expression* ref, Expression* value, Index fieldIndex) {
   // we've sent information based on the final and correct information about our
   // reference and value.)
 
-  auto refContents = getContents(getIndex(ExpressionLocation{ref, 0}));
   auto valueContents = getContents(getIndex(ExpressionLocation{value, 0}));
+
+  // See the related comment in readFromData() as to why these are the only
+  // things we need to check, and why the assertion afterwards contains the only
+  // things possible.
   if (refContents.isNone() || refContents.isNull()) {
     return;
   }
-  if (refContents.hasExactType()) {
-    // Update the one possible type here.
-    auto heapLoc =
-      DataLocation{refContents.getType().getHeapType(), fieldIndex};
-    updateContents(heapLoc, valueContents);
-  } else {
-    assert(refContents.isMany() || refContents.isGlobal());
+  assert(refContents.isGlobal() || refContents.isConeType());
 
-    // Update all possible subtypes here.
-    auto type = ref->type.getHeapType();
-    for (auto subType : subTypes->getAllSubTypes(type)) {
-      auto heapLoc = DataLocation{subType, fieldIndex};
+  // As in readFromData, normalize to the proper cone.
+  auto cone = refContents.getCone();
+  auto normalizedDepth = getNormalizedConeDepth(cone.type, cone.depth);
+
+  subTypes->iterSubTypes(
+    cone.type.getHeapType(), normalizedDepth, [&](HeapType type, Index depth) {
+      auto heapLoc = DataLocation{type, fieldIndex};
       updateContents(heapLoc, valueContents);
-    }
-  }
-}
-
-void Flower::flowRefCast(const PossibleContents& contents, RefCast* cast) {
-  // RefCast only allows valid values to go through: nulls and things of the
-  // cast type. Filter anything else out.
-  PossibleContents filtered;
-  if (contents.isMany()) {
-    // Just pass the Many through.
-    // TODO: we could emit a cone type here when we get one, instead of
-    //       emitting a Many in any of these code paths
-    filtered = contents;
-  } else {
-    bool isSubType =
-      HeapType::isSubType(contents.getType().getHeapType(), cast->intendedType);
-    if (isSubType) {
-      // The contents are not Many, but their heap type is a subtype of the
-      // intended type, so we'll pass that through. Note that we pass the entire
-      // contents here, which includes nullability, but that is fine, it would
-      // just overlap with the code below that handles nulls (that is, the code
-      // below only makes a difference when the heap type is *not* a subtype but
-      // the type is nullable).
-      // TODO: When we get cone types, we could filter the cone here.
-      filtered.combine(contents);
-    }
-    bool mayBeNull = contents.getType().isNullable();
-    if (mayBeNull) {
-      // A null is possible, so pass that along.
-      filtered.combine(
-        PossibleContents::literal(Literal::makeNull(cast->intendedType)));
-    }
-  }
-  if (!filtered.isNone()) {
-#if defined(POSSIBLE_CONTENTS_DEBUG) && POSSIBLE_CONTENTS_DEBUG >= 2
-    std::cout << "    ref.cast passing through\n";
-    filtered.dump(std::cout);
-    std::cout << '\n';
-#endif
-    updateContents(ExpressionLocation{cast, 0}, filtered);
-  }
+    });
 }
 
 #if defined(POSSIBLE_CONTENTS_DEBUG) && POSSIBLE_CONTENTS_DEBUG >= 2
@@ -1801,22 +2095,20 @@ void Flower::dump(Location location) {
     std::cout << " : " << loc->index << '\n';
   } else if (auto* loc = std::get_if<TagLocation>(&location)) {
     std::cout << "  tagloc " << loc->tag << '\n';
-  } else if (auto* loc = std::get_if<LocalLocation>(&location)) {
-    std::cout << "  localloc " << loc->func->name << " : " << loc->index
-              << " tupleIndex " << loc->tupleIndex << '\n';
+  } else if (auto* loc = std::get_if<ParamLocation>(&location)) {
+    std::cout << "  paramloc " << loc->func->name << " : " << loc->index
+              << '\n';
   } else if (auto* loc = std::get_if<ResultLocation>(&location)) {
-    std::cout << "  resultloc " << loc->func->name << " : " << loc->index
+    std::cout << "  resultloc $" << loc->func->name << " : " << loc->index
               << '\n';
   } else if (auto* loc = std::get_if<GlobalLocation>(&location)) {
     std::cout << "  globalloc " << loc->name << '\n';
   } else if (auto* loc = std::get_if<BreakTargetLocation>(&location)) {
     std::cout << "  branchloc " << loc->func->name << " : " << loc->target
               << " tupleIndex " << loc->tupleIndex << '\n';
-  } else if (auto* loc = std::get_if<SignatureParamLocation>(&location)) {
-    WASM_UNUSED(loc);
+  } else if (std::get_if<SignatureParamLocation>(&location)) {
     std::cout << "  sigparamloc " << '\n';
-  } else if (auto* loc = std::get_if<SignatureResultLocation>(&location)) {
-    WASM_UNUSED(loc);
+  } else if (std::get_if<SignatureResultLocation>(&location)) {
     std::cout << "  sigresultloc " << '\n';
   } else if (auto* loc = std::get_if<NullLocation>(&location)) {
     std::cout << "  Nullloc " << loc->type << '\n';

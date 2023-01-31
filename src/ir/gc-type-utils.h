@@ -33,121 +33,73 @@ enum EvaluationResult {
   // The evaluation is known to succeed (i.e., we find what we are looking
   // for), or fail, at compile time.
   Success,
-  Failure
+  Failure,
+  // The cast will only succeed if the input is a null, or is not
+  SuccessOnlyIfNull,
+  SuccessOnlyIfNonNull,
 };
 
-// Given an instruction that checks if the child reference is of a certain kind
-// (like br_on_func checks if it is a function), see if type info lets us
-// determine that at compile time.
-// This ignores nullability - it just checks the kind.
-inline EvaluationResult evaluateKindCheck(Expression* curr) {
-  Kind expected;
-  Expression* child;
-
-  // Some operations flip the condition.
-  bool flip = false;
-
-  if (auto* br = curr->dynCast<BrOn>()) {
-    switch (br->op) {
-      // We don't check nullability here.
-      case BrOnNull:
-      case BrOnNonNull:
-      case BrOnCastFail:
-        flip = true;
-        [[fallthrough]];
-      case BrOnCast:
-        // Note that the type must be non-nullable for us to succeed since a
-        // null would make us fail.
-        if (Type::isSubType(br->ref->type,
-                            Type(br->intendedType, NonNullable))) {
-          return flip ? Failure : Success;
-        }
-        return Unknown;
-      case BrOnNonFunc:
-        flip = true;
-        [[fallthrough]];
-      case BrOnFunc:
-        expected = Func;
-        break;
-      case BrOnNonData:
-        flip = true;
-        [[fallthrough]];
-      case BrOnData:
-        expected = Data;
-        break;
-      case BrOnNonI31:
-        flip = true;
-        [[fallthrough]];
-      case BrOnI31:
-        expected = I31;
-        break;
-      default:
-        WASM_UNREACHABLE("unhandled BrOn");
-    }
-    child = br->ref;
-  } else if (auto* is = curr->dynCast<RefIs>()) {
-    switch (is->op) {
-      // We don't check nullability here.
-      case RefIsNull:
-        return Unknown;
-      case RefIsFunc:
-        expected = Func;
-        break;
-      case RefIsData:
-        expected = Data;
-        break;
-      case RefIsI31:
-        expected = I31;
-        break;
-      default:
-        WASM_UNREACHABLE("unhandled RefIs");
-    }
-    child = is->value;
-  } else if (auto* as = curr->dynCast<RefAs>()) {
-    switch (as->op) {
-      // We don't check nullability here.
-      case RefAsNonNull:
-        return Unknown;
-      case RefAsFunc:
-        expected = Func;
-        break;
-      case RefAsData:
-        expected = Data;
-        break;
-      case RefAsI31:
-        expected = I31;
-        break;
-      case ExternInternalize:
-      case ExternExternalize:
-        // These instructions can never be removed.
-        return Unknown;
-      default:
-        WASM_UNREACHABLE("unhandled RefAs");
-    }
-    child = as->value;
-  } else {
-    WASM_UNREACHABLE("invalid input to evaluateKindCheck");
+inline EvaluationResult flipEvaluationResult(EvaluationResult result) {
+  switch (result) {
+    case Unknown:
+      return Unknown;
+    case Success:
+      return Failure;
+    case Failure:
+      return Success;
+    case SuccessOnlyIfNull:
+      return SuccessOnlyIfNonNull;
+    case SuccessOnlyIfNonNull:
+      return SuccessOnlyIfNull;
   }
+  WASM_UNREACHABLE("unexpected result");
+}
 
-  auto childType = child->type;
-
-  Kind actual;
-
-  if (childType.isFunction()) {
-    actual = Func;
-  } else if (childType.isData()) {
-    actual = Data;
-  } else if (childType.getHeapType() == HeapType::i31) {
-    actual = I31;
-  } else {
+// Given the type of a reference and a type to attempt to cast it to, return
+// what we know about the result.
+inline EvaluationResult evaluateCastCheck(Type refType, Type castType) {
+  if (!refType.isRef() || !castType.isRef()) {
+    // Unreachable etc. are meaningless situations in which we can inform the
+    // caller about nothing useful.
     return Unknown;
   }
 
-  auto success = actual == expected;
-  if (flip) {
-    success = !success;
+  if (Type::isSubType(refType, castType)) {
+    return Success;
   }
-  return success ? Success : Failure;
+
+  auto refHeapType = refType.getHeapType();
+  auto castHeapType = castType.getHeapType();
+  auto refIsHeapSubType = HeapType::isSubType(refHeapType, castHeapType);
+  auto castIsHeapSubType = HeapType::isSubType(castHeapType, refHeapType);
+  bool heapTypesCompatible = refIsHeapSubType || castIsHeapSubType;
+
+  if (!heapTypesCompatible) {
+    // If at least one is not null, then since the heap types are not compatible
+    // we must fail.
+    if (refType.isNonNullable() || castType.isNonNullable()) {
+      return Failure;
+    }
+
+    // Otherwise, both are nullable and a null is the only hope of success.
+    return SuccessOnlyIfNull;
+  }
+
+  // If the heap type part of the cast is compatible but the cast as a whole is
+  // not, we must have a nullable input ref that we are casting to a
+  // non-nullable type.
+  if (refIsHeapSubType) {
+    assert(refType.isNullable());
+    assert(castType.isNonNullable());
+    if (refHeapType.isBottom()) {
+      // Non-null references to bottom types do not exist, so there's no value
+      // that could make the cast succeed.
+      return Failure;
+    }
+    return SuccessOnlyIfNonNull;
+  }
+
+  return Unknown;
 }
 
 } // namespace wasm::GCTypeUtils
