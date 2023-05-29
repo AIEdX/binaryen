@@ -16,6 +16,9 @@ switch (buf[0]) {
           case 'c':
             if (op == "array.copy"sv) { return makeArrayCopy(s); }
             goto parse_error;
+          case 'f':
+            if (op == "array.fill"sv) { return makeArrayFill(s); }
+            goto parse_error;
           case 'g': {
             switch (buf[9]) {
               case '\0':
@@ -35,9 +38,20 @@ switch (buf[0]) {
               default: goto parse_error;
             }
           }
-          case 'i':
-            if (op == "array.init_static"sv) { return makeArrayInitStatic(s); }
-            goto parse_error;
+          case 'i': {
+            switch (buf[11]) {
+              case 'd':
+                if (op == "array.init_data"sv) { return makeArrayInitData(s); }
+                goto parse_error;
+              case 'e':
+                if (op == "array.init_elem"sv) { return makeArrayInitElem(s); }
+                goto parse_error;
+              case 's':
+                if (op == "array.init_static"sv) { return makeArrayNewFixed(s); }
+                goto parse_error;
+              default: goto parse_error;
+            }
+          }
           case 'l':
             if (op == "array.len"sv) { return makeArrayLen(s); }
             goto parse_error;
@@ -51,7 +65,7 @@ switch (buf[0]) {
                   case 'd': {
                     switch (buf[11]) {
                       case 'a':
-                        if (op == "array.new_data"sv) { return makeArrayNewSeg(s, NewData); }
+                        if (op == "array.new_data"sv) { return makeArrayNewData(s); }
                         goto parse_error;
                       case 'e':
                         if (op == "array.new_default"sv) { return makeArrayNew(s, true); }
@@ -60,7 +74,10 @@ switch (buf[0]) {
                     }
                   }
                   case 'e':
-                    if (op == "array.new_elem"sv) { return makeArrayNewSeg(s, NewElem); }
+                    if (op == "array.new_elem"sv) { return makeArrayNewElem(s); }
+                    goto parse_error;
+                  case 'f':
+                    if (op == "array.new_fixed"sv) { return makeArrayNewFixed(s); }
                     goto parse_error;
                   default: goto parse_error;
                 }
@@ -3194,6 +3211,9 @@ switch (buf[0]) {
                   case 'f':
                     if (op == "string.from_code_point"sv) { return makeStringNew(s, StringNewFromCodePoint, false); }
                     goto parse_error;
+                  case 'h':
+                    if (op == "string.hash"sv) { return makeStringMeasure(s, StringMeasureHash); }
+                    goto parse_error;
                   case 'i':
                     if (op == "string.is_usv_sequence"sv) { return makeStringMeasure(s, StringMeasureIsUSV); }
                     goto parse_error;
@@ -3601,6 +3621,13 @@ switch (buf[0]) {
               return *ret;
             }
             goto parse_error;
+          case 'f':
+            if (op == "array.fill"sv) {
+              auto ret = makeArrayFill(ctx, pos);
+              CHECK_ERR(ret);
+              return *ret;
+            }
+            goto parse_error;
           case 'g': {
             switch (buf[9]) {
               case '\0':
@@ -3632,13 +3659,32 @@ switch (buf[0]) {
               default: goto parse_error;
             }
           }
-          case 'i':
-            if (op == "array.init_static"sv) {
-              auto ret = makeArrayInitStatic(ctx, pos);
-              CHECK_ERR(ret);
-              return *ret;
+          case 'i': {
+            switch (buf[11]) {
+              case 'd':
+                if (op == "array.init_data"sv) {
+                  auto ret = makeArrayInitData(ctx, pos);
+                  CHECK_ERR(ret);
+                  return *ret;
+                }
+                goto parse_error;
+              case 'e':
+                if (op == "array.init_elem"sv) {
+                  auto ret = makeArrayInitElem(ctx, pos);
+                  CHECK_ERR(ret);
+                  return *ret;
+                }
+                goto parse_error;
+              case 's':
+                if (op == "array.init_static"sv) {
+                  auto ret = makeArrayNewFixed(ctx, pos);
+                  CHECK_ERR(ret);
+                  return *ret;
+                }
+                goto parse_error;
+              default: goto parse_error;
             }
-            goto parse_error;
+          }
           case 'l':
             if (op == "array.len"sv) {
               auto ret = makeArrayLen(ctx, pos);
@@ -3661,7 +3707,7 @@ switch (buf[0]) {
                     switch (buf[11]) {
                       case 'a':
                         if (op == "array.new_data"sv) {
-                          auto ret = makeArrayNewSeg(ctx, pos, NewData);
+                          auto ret = makeArrayNewData(ctx, pos);
                           CHECK_ERR(ret);
                           return *ret;
                         }
@@ -3678,7 +3724,14 @@ switch (buf[0]) {
                   }
                   case 'e':
                     if (op == "array.new_elem"sv) {
-                      auto ret = makeArrayNewSeg(ctx, pos, NewElem);
+                      auto ret = makeArrayNewElem(ctx, pos);
+                      CHECK_ERR(ret);
+                      return *ret;
+                    }
+                    goto parse_error;
+                  case 'f':
+                    if (op == "array.new_fixed"sv) {
+                      auto ret = makeArrayNewFixed(ctx, pos);
                       CHECK_ERR(ret);
                       return *ret;
                     }
@@ -8927,6 +8980,13 @@ switch (buf[0]) {
                   case 'f':
                     if (op == "string.from_code_point"sv) {
                       auto ret = makeStringNew(ctx, pos, StringNewFromCodePoint, false);
+                      CHECK_ERR(ret);
+                      return *ret;
+                    }
+                    goto parse_error;
+                  case 'h':
+                    if (op == "string.hash"sv) {
+                      auto ret = makeStringMeasure(ctx, pos, StringMeasureHash);
                       CHECK_ERR(ret);
                       return *ret;
                     }

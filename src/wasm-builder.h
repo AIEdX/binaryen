@@ -167,7 +167,6 @@ public:
   }
 
   // IR nodes
-
   Nop* makeNop() { return wasm.allocator.alloc<Nop>(); }
   Block* makeBlock(Expression* first = nullptr) {
     auto* ret = wasm.allocator.alloc<Block>();
@@ -183,52 +182,47 @@ public:
     ret->finalize();
     return ret;
   }
-  Block* makeBlock(const std::vector<Expression*>& items) {
+
+  template<typename T>
+  using bool_if_not_expr_t =
+    std::enable_if_t<std::negation_v<std::is_convertible<T, Expression*>>,
+                     bool>;
+
+  template<typename T, bool_if_not_expr_t<T> = true>
+  Block* makeBlock(const T& items) {
     auto* ret = wasm.allocator.alloc<Block>();
     ret->list.set(items);
     ret->finalize();
     return ret;
   }
-  Block* makeBlock(const std::vector<Expression*>& items, Type type) {
+
+  template<typename T, bool_if_not_expr_t<T> = true>
+  Block* makeBlock(const T& items, Type type) {
     auto* ret = wasm.allocator.alloc<Block>();
     ret->list.set(items);
     ret->finalize(type);
     return ret;
+  }
+
+  template<typename T, bool_if_not_expr_t<T> = true>
+  Block* makeBlock(Name name, const T& items, Type type) {
+    auto* ret = wasm.allocator.alloc<Block>();
+    ret->name = name;
+    ret->list.set(items);
+    ret->finalize(type);
+    return ret;
+  }
+  Block* makeBlock(std::initializer_list<Expression*>&& items) {
+    return makeBlock(items);
+  }
+  Block* makeBlock(std::initializer_list<Expression*>&& items, Type type) {
+    return makeBlock(items, type);
   }
   Block*
-  makeBlock(Name name, const std::vector<Expression*>& items, Type type) {
-    auto* ret = wasm.allocator.alloc<Block>();
-    ret->name = name;
-    ret->list.set(items);
-    ret->finalize(type);
-    return ret;
+  makeBlock(Name name, std::initializer_list<Expression*>&& items, Type type) {
+    return makeBlock(name, items, type);
   }
-  Block* makeBlock(const ExpressionList& items) {
-    auto* ret = wasm.allocator.alloc<Block>();
-    ret->list.set(items);
-    ret->finalize();
-    return ret;
-  }
-  Block* makeBlock(const ExpressionList& items, Type type) {
-    auto* ret = wasm.allocator.alloc<Block>();
-    ret->list.set(items);
-    ret->finalize(type);
-    return ret;
-  }
-  Block* makeBlock(Name name, const ExpressionList& items) {
-    auto* ret = wasm.allocator.alloc<Block>();
-    ret->name = name;
-    ret->list.set(items);
-    ret->finalize();
-    return ret;
-  }
-  Block* makeBlock(Name name, const ExpressionList& items, Type type) {
-    auto* ret = wasm.allocator.alloc<Block>();
-    ret->name = name;
-    ret->list.set(items);
-    ret->finalize(type);
-    return ret;
-  }
+
   If* makeIf(Expression* condition,
              Expression* ifTrue,
              Expression* ifFalse = nullptr) {
@@ -575,7 +569,7 @@ public:
     ret->memory = memory;
     return ret;
   }
-  MemoryInit* makeMemoryInit(uint32_t segment,
+  MemoryInit* makeMemoryInit(Name segment,
                              Expression* dest,
                              Expression* offset,
                              Expression* size,
@@ -589,7 +583,7 @@ public:
     ret->finalize();
     return ret;
   }
-  DataDrop* makeDataDrop(uint32_t segment) {
+  DataDrop* makeDataDrop(Name segment) {
     auto* ret = wasm.allocator.alloc<DataDrop>();
     ret->segment = segment;
     ret->finalize();
@@ -934,13 +928,11 @@ public:
     ret->finalize();
     return ret;
   }
-  ArrayNewSeg* makeArrayNewSeg(ArrayNewSegOp op,
-                               HeapType type,
-                               Index seg,
-                               Expression* offset,
-                               Expression* size) {
-    auto* ret = wasm.allocator.alloc<ArrayNewSeg>();
-    ret->op = op;
+  ArrayNewData* makeArrayNewData(HeapType type,
+                                 Name seg,
+                                 Expression* offset,
+                                 Expression* size) {
+    auto* ret = wasm.allocator.alloc<ArrayNewData>();
     ret->segment = seg;
     ret->offset = offset;
     ret->size = size;
@@ -948,9 +940,21 @@ public:
     ret->finalize();
     return ret;
   }
-  ArrayInit* makeArrayInit(HeapType type,
-                           const std::vector<Expression*>& values) {
-    auto* ret = wasm.allocator.alloc<ArrayInit>();
+  ArrayNewElem* makeArrayNewElem(HeapType type,
+                                 Name seg,
+                                 Expression* offset,
+                                 Expression* size) {
+    auto* ret = wasm.allocator.alloc<ArrayNewElem>();
+    ret->segment = seg;
+    ret->offset = offset;
+    ret->size = size;
+    ret->type = Type(type, NonNullable);
+    ret->finalize();
+    return ret;
+  }
+  ArrayNewFixed* makeArrayNewFixed(HeapType type,
+                                   const std::vector<Expression*>& values) {
+    auto* ret = wasm.allocator.alloc<ArrayNewFixed>();
     ret->values.set(values);
     ret->type = Type(type, NonNullable);
     ret->finalize();
@@ -994,6 +998,46 @@ public:
     ret->srcRef = srcRef;
     ret->srcIndex = srcIndex;
     ret->length = length;
+    ret->finalize();
+    return ret;
+  }
+  ArrayFill* makeArrayFill(Expression* ref,
+                           Expression* index,
+                           Expression* value,
+                           Expression* size) {
+    auto* ret = wasm.allocator.alloc<ArrayFill>();
+    ret->ref = ref;
+    ret->index = index;
+    ret->value = value;
+    ret->size = size;
+    ret->finalize();
+    return ret;
+  }
+  ArrayInitData* makeArrayInitData(Name seg,
+                                   Expression* ref,
+                                   Expression* index,
+                                   Expression* offset,
+                                   Expression* size) {
+    auto* ret = wasm.allocator.alloc<ArrayInitData>();
+    ret->segment = seg;
+    ret->ref = ref;
+    ret->index = index;
+    ret->offset = offset;
+    ret->size = size;
+    ret->finalize();
+    return ret;
+  }
+  ArrayInitElem* makeArrayInitElem(Name seg,
+                                   Expression* ref,
+                                   Expression* index,
+                                   Expression* offset,
+                                   Expression* size) {
+    auto* ret = wasm.allocator.alloc<ArrayInitElem>();
+    ret->segment = seg;
+    ret->ref = ref;
+    ret->index = index;
+    ret->offset = offset;
+    ret->size = size;
     ret->finalize();
     return ret;
   }
@@ -1153,6 +1197,18 @@ public:
     if (type.isRef() && type.getHeapType() == HeapType::i31) {
       return makeI31New(makeConst(value.geti31()));
     }
+    if (type.isString()) {
+      // TODO: more than ascii support
+      std::string string;
+      for (auto c : value.getGCData()->values) {
+        string.push_back(c.getInteger());
+      }
+      return makeStringConst(string);
+    }
+    if (type.isRef() && type.getHeapType() == HeapType::ext) {
+      return makeRefAs(ExternExternalize,
+                       makeConstantExpression(value.internalize()));
+    }
     TODO_SINGLE_COMPOUND(type);
     WASM_UNREACHABLE("unsupported constant expression");
   }
@@ -1289,7 +1345,12 @@ public:
       return ExpressionManipulator::refNull(curr, curr->type);
     }
     if (curr->type.isRef() && curr->type.getHeapType() == HeapType::i31) {
-      return makeI31New(makeConst(0));
+      Expression* ret = makeI31New(makeConst(0));
+      if (curr->type.isNullable()) {
+        // To keep the type identical, wrap it in a block that adds nullability.
+        ret = makeBlock({ret}, curr->type);
+      }
+      return ret;
     }
     if (!curr->type.isBasic()) {
       // We can't do any better, keep the original.

@@ -248,14 +248,22 @@ struct TypeUpdater
           return; // did not turn
         }
       } else if (auto* iff = curr->dynCast<If>()) {
-        // may not be unreachable if just one side is
+        // We only want to change a concrete type to unreachable here, so undo
+        // anything else. Other changes can be a problem, like refining the type
+        // of an if for GC-using code, as the code all around us only assumes we
+        // are propagating unreachability and not doing a full refinalize.
+        auto old = iff->type;
         iff->finalize();
         if (curr->type != Type::unreachable) {
+          iff->type = old;
           return; // did not turn
         }
       } else if (auto* tryy = curr->dynCast<Try>()) {
+        // See comment on If, above.
+        auto old = tryy->type;
         tryy->finalize();
         if (curr->type != Type::unreachable) {
+          tryy->type = old;
           return; // did not turn
         }
       } else {
@@ -303,9 +311,13 @@ struct TypeUpdater
     if (!curr->type.isConcrete()) {
       return; // nothing concrete to change to unreachable
     }
+    // See comment in propagateTypesUp() for If regarding restoring the type.
+    auto old = curr->type;
     curr->finalize();
     if (curr->type == Type::unreachable) {
       propagateTypesUp(curr);
+    } else {
+      curr->type = old;
     }
   }
 
@@ -313,9 +325,13 @@ struct TypeUpdater
     if (!curr->type.isConcrete()) {
       return; // nothing concrete to change to unreachable
     }
+    // See comment in propagateTypesUp() for Try regarding restoring the type.
+    auto old = curr->type;
     curr->finalize();
     if (curr->type == Type::unreachable) {
       propagateTypesUp(curr);
+    } else {
+      curr->type = old;
     }
   }
 
@@ -403,6 +419,76 @@ private:
 
   // Map old types to their indices in the builder.
   InsertOrderedMap<HeapType, Index> typeIndices;
+};
+
+class TypeMapper : public GlobalTypeRewriter {
+public:
+  using TypeUpdates = std::unordered_map<HeapType, HeapType>;
+
+  const TypeUpdates& mapping;
+
+  std::unordered_map<HeapType, Signature> newSignatures;
+
+public:
+  TypeMapper(Module& wasm, const TypeUpdates& mapping)
+    : GlobalTypeRewriter(wasm), mapping(mapping) {}
+
+  void map() {
+    // Map the types of expressions (curr->type, etc.) to their merged
+    // types.
+    mapTypes(mapping);
+
+    // Update the internals of types (struct fields, signatures, etc.) to
+    // refer to the merged types.
+    update();
+  }
+
+  Type getNewType(Type type) {
+    if (!type.isRef()) {
+      return type;
+    }
+    auto heapType = type.getHeapType();
+    auto iter = mapping.find(heapType);
+    if (iter != mapping.end()) {
+      return getTempType(Type(iter->second, type.getNullability()));
+    }
+    return getTempType(type);
+  }
+
+  void modifyStruct(HeapType oldType, Struct& struct_) override {
+    auto& oldFields = oldType.getStruct().fields;
+    for (Index i = 0; i < oldFields.size(); i++) {
+      auto& oldField = oldFields[i];
+      auto& newField = struct_.fields[i];
+      newField.type = getNewType(oldField.type);
+    }
+  }
+  void modifyArray(HeapType oldType, Array& array) override {
+    array.element.type = getNewType(oldType.getArray().element.type);
+  }
+  void modifySignature(HeapType oldSignatureType, Signature& sig) override {
+    auto getUpdatedTypeList = [&](Type type) {
+      std::vector<Type> vec;
+      for (auto t : type) {
+        vec.push_back(getNewType(t));
+      }
+      return getTempTupleType(vec);
+    };
+
+    auto oldSig = oldSignatureType.getSignature();
+    sig.params = getUpdatedTypeList(oldSig.params);
+    sig.results = getUpdatedTypeList(oldSig.results);
+  }
+  std::optional<HeapType> getSuperType(HeapType oldType) override {
+    // If the super is mapped, get it from the mapping.
+    auto super = oldType.getSuperType();
+    if (super) {
+      if (auto it = mapping.find(*super); it != mapping.end()) {
+        return it->second;
+      }
+    }
+    return super;
+  }
 };
 
 namespace TypeUpdating {

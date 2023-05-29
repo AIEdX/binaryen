@@ -15,6 +15,30 @@ full changeset diff at the end of each section.
 Current Trunk
 -------------
 
+v113
+----
+
+- Add a `wasm-merge` tool. This is a full rewrite of the previous `wasm-merge`
+  tool that was removed from the tree in the past. The new version is much
+  simpler after recent improvements to multi-memory and multi-table. The
+  rewrite was motivated by new use cases for merging modules in the context of
+  WasmGC.
+- Some C and JS API functions now refer to data and element segments by name
+  instead of index.
+- The `--nominal` and `--hybrid` command line options and related API functions
+  have been removed. The only supported type system is now the standard
+  isorecursive (i.e. hybrid) type system. (#5672)
+- Add a "mayNotReturn" effect (#5711).
+- Disable the memory64 feature in Memory64Lowering.cpp (#5679).
+- Disable sign extension in SignExtLowering.cpp (#5676).
+
+v112
+----
+
+- Add AbstractTypeRefining pass (#5461)
+- Add a mechanism to skip a pass by name (#5448)
+- Add TypeMerging pass (#5321)
+- Add TypeSSA pass  (#5299)
 - Optimization sequences like `-O3 -Os` now do the expected thing and run `-O3`
   followed by `-Os`. Previously the last of them set the defaults that were used
   by all executions, so `-O3 -Os` was equivalent to `-Os -Os`. (There is no
@@ -32,6 +56,12 @@ Current Trunk
   and JS APIs and `RefIs` has been replaced with `RefIsNull`.
 - Types `Data` and `Dataref` have been replaced with types `Struct` and
   `Structref` in the C and JS APIs.
+* `BinaryenStringNew` now takes an additional last argument, `try_`, indicating
+  whether the instruction is one of `string.new_utf8_try` respectively
+  `string.new_utf8_array_try`.
+* `BinaryenStringEq` now takes an additional second argument, `op`, that is
+  either `BinaryenStringEqEqual()` if the instruction is `string.eq` or
+  `BinaryenStringEqCompare()` if the instruction is `string.compare`.
 
 v111
 ----

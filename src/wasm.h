@@ -563,11 +563,6 @@ enum RefAsOp {
   ExternExternalize,
 };
 
-enum ArrayNewSegOp {
-  NewData,
-  NewElem,
-};
-
 enum BrOnOp {
   BrOnNull,
   BrOnNonNull,
@@ -579,12 +574,12 @@ enum StringNewOp {
   // Linear memory
   StringNewUTF8,
   StringNewWTF8,
-  StringNewReplace,
+  StringNewLossyUTF8,
   StringNewWTF16,
   // GC
   StringNewUTF8Array,
   StringNewWTF8Array,
-  StringNewReplaceArray,
+  StringNewLossyUTF8Array,
   StringNewWTF16Array,
   // Other
   StringNewFromCodePoint,
@@ -596,13 +591,16 @@ enum StringMeasureOp {
   StringMeasureWTF16,
   StringMeasureIsUSV,
   StringMeasureWTF16View,
+  StringMeasureHash,
 };
 
 enum StringEncodeOp {
   StringEncodeUTF8,
+  StringEncodeLossyUTF8,
   StringEncodeWTF8,
   StringEncodeWTF16,
   StringEncodeUTF8Array,
+  StringEncodeLossyUTF8Array,
   StringEncodeWTF8Array,
   StringEncodeWTF16Array,
 };
@@ -715,12 +713,16 @@ public:
     StructGetId,
     StructSetId,
     ArrayNewId,
-    ArrayNewSegId,
-    ArrayInitId,
+    ArrayNewDataId,
+    ArrayNewElemId,
+    ArrayNewFixedId,
     ArrayGetId,
     ArraySetId,
     ArrayLenId,
     ArrayCopyId,
+    ArrayFillId,
+    ArrayInitDataId,
+    ArrayInitElemId,
     RefAsId,
     StringNewId,
     StringConstId,
@@ -1175,7 +1177,7 @@ public:
   MemoryInit() = default;
   MemoryInit(MixedArena& allocator) : MemoryInit() {}
 
-  Index segment;
+  Name segment;
   Expression* dest;
   Expression* offset;
   Expression* size;
@@ -1189,7 +1191,7 @@ public:
   DataDrop() = default;
   DataDrop(MixedArena& allocator) : DataDrop() {}
 
-  Index segment;
+  Name segment;
 
   void finalize();
 };
@@ -1514,7 +1516,7 @@ public:
 
   void finalize();
 
-  Type getCastType() { return castType; }
+  Type& getCastType() { return castType; }
 };
 
 class RefCast : public SpecificExpression<Expression::RefCastId> {
@@ -1530,7 +1532,7 @@ public:
 
   void finalize();
 
-  Type getCastType() { return type; }
+  Type& getCastType() { return type; }
 };
 
 class BrOn : public SpecificExpression<Expression::BrOnId> {
@@ -1544,7 +1546,7 @@ public:
 
   void finalize();
 
-  Type getCastType() { return castType; }
+  Type& getCastType() { return castType; }
 
   // Returns the type sent on the branch, if it is taken.
   Type getSentType();
@@ -1602,21 +1604,31 @@ public:
   void finalize();
 };
 
-class ArrayNewSeg : public SpecificExpression<Expression::ArrayNewSegId> {
+class ArrayNewData : public SpecificExpression<Expression::ArrayNewDataId> {
 public:
-  ArrayNewSeg(MixedArena& allocator) {}
+  ArrayNewData(MixedArena& allocator) {}
 
-  ArrayNewSegOp op;
-  Index segment;
+  Name segment;
   Expression* offset;
   Expression* size;
 
   void finalize();
 };
 
-class ArrayInit : public SpecificExpression<Expression::ArrayInitId> {
+class ArrayNewElem : public SpecificExpression<Expression::ArrayNewElemId> {
 public:
-  ArrayInit(MixedArena& allocator) : values(allocator) {}
+  ArrayNewElem(MixedArena& allocator) {}
+
+  Name segment;
+  Expression* offset;
+  Expression* size;
+
+  void finalize();
+};
+
+class ArrayNewFixed : public SpecificExpression<Expression::ArrayNewFixedId> {
+public:
+  ArrayNewFixed(MixedArena& allocator) : values(allocator) {}
 
   ExpressionList values;
 
@@ -1664,6 +1676,44 @@ public:
   Expression* srcRef;
   Expression* srcIndex;
   Expression* length;
+
+  void finalize();
+};
+
+class ArrayFill : public SpecificExpression<Expression::ArrayFillId> {
+public:
+  ArrayFill(MixedArena& allocator) {}
+
+  Expression* ref;
+  Expression* index;
+  Expression* value;
+  Expression* size;
+
+  void finalize();
+};
+
+class ArrayInitData : public SpecificExpression<Expression::ArrayInitDataId> {
+public:
+  ArrayInitData(MixedArena& allocator) {}
+
+  Name segment;
+  Expression* ref;
+  Expression* index;
+  Expression* offset;
+  Expression* size;
+
+  void finalize();
+};
+
+class ArrayInitElem : public SpecificExpression<Expression::ArrayInitElemId> {
+public:
+  ArrayInitElem(MixedArena& allocator) {}
+
+  Name segment;
+  Expression* ref;
+  Expression* index;
+  Expression* offset;
+  Expression* size;
 
   void finalize();
 };
@@ -2020,6 +2070,21 @@ enum class ExternalKind {
   Invalid = -1
 };
 
+// The kind of a top-level module item. (This overlaps with ExternalKind, but
+// C++ has no good way to extend an enum.) All such items are referred to by
+// name in the IR (that is, the IR is relocatable), and so they are subclasses
+// of the Named class.
+enum class ModuleItemKind {
+  Function = 0,
+  Table = 1,
+  Memory = 2,
+  Global = 3,
+  Tag = 4,
+  DataSegment = 5,
+  ElementSegment = 6,
+  Invalid = -1
+};
+
 class Export {
 public:
   // exported name - note that this is the key, as the internal name is
@@ -2238,13 +2303,22 @@ public:
   void removeGlobals(std::function<bool(Global*)> pred);
   void removeTags(std::function<bool(Tag*)> pred);
 
+  void updateFunctionsMap();
   void updateDataSegmentsMap();
   void updateMaps();
 
   void clearDebugInfo();
 };
 
+// Utility for printing an expression with named types.
 using ModuleExpression = std::pair<Module&, Expression*>;
+
+// Utility for printing only the top level of an expression. Named types will be
+// used if `module` is non-null.
+struct ShallowExpression {
+  Expression* expr;
+  Module* module = nullptr;
+};
 
 } // namespace wasm
 
@@ -2258,6 +2332,7 @@ template<> struct hash<wasm::Address> {
 std::ostream& operator<<(std::ostream& o, wasm::Module& module);
 std::ostream& operator<<(std::ostream& o, wasm::Expression& expression);
 std::ostream& operator<<(std::ostream& o, wasm::ModuleExpression pair);
+std::ostream& operator<<(std::ostream& o, wasm::ShallowExpression expression);
 std::ostream& operator<<(std::ostream& o, wasm::StackInst& inst);
 std::ostream& operator<<(std::ostream& o, wasm::StackIR& ir);
 

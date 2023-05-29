@@ -53,14 +53,12 @@ public:
 
   // Walk an expression and all its children.
   void walk(Expression* ast) {
-    pre();
     InternalAnalyzer(*this).walk(ast);
     post();
   }
 
   // Visit an expression, without any children.
   void visit(Expression* ast) {
-    pre();
     InternalAnalyzer(*this).visit(ast);
     post();
   }
@@ -122,10 +120,6 @@ public:
   // *do* mark a potentially infinite number of allocations as trapping, as all
   // VMs would trap eventually, and the same for potentially infinite recursion,
   // etc.
-  //   * We assume that VMs will timeout eventually, so any loop that we cannot
-  //     prove terminates is considered to trap. (Some VMs might not have
-  //     such timeouts, but even they will error before the heat death of the
-  //     universe, which is a kind of trap.)
   bool trap = false;
   // A trap from an instruction like a load or div/rem, which may trap on corner
   // cases. If we do not ignore implicit traps then these are counted as a trap.
@@ -145,6 +139,9 @@ public:
   // If this expression contains 'pop's that are not enclosed in 'catch' body.
   // For example, (drop (pop i32)) should set this to true.
   bool danglingPop = false;
+  // Whether this code may "hang" and not eventually complete. An infinite loop,
+  // or a continuation that is never continued, are examples of that.
+  bool mayNotReturn = false;
 
   // Helper functions to check for various effect types
 
@@ -184,7 +181,7 @@ public:
 
   bool hasNonTrapSideEffects() const {
     return localsWritten.size() > 0 || danglingPop || writesGlobalState() ||
-           throws() || transfersControlFlow();
+           throws() || transfersControlFlow() || mayNotReturn;
   }
 
   bool hasSideEffects() const { return trap || hasNonTrapSideEffects(); }
@@ -419,12 +416,7 @@ private:
     void visitIf(If* curr) {}
     void visitLoop(Loop* curr) {
       if (curr->name.is() && parent.breakTargets.erase(curr->name) > 0) {
-        // Breaks to this loop exist, which we just removed as they do not have
-        // further effect outside of this loop. One additional thing we need to
-        // take into account is infinite looping, which is a noticeable side
-        // effect we can't normally remove - eventually the VM will time out and
-        // error (see more details in the comment on trapping above).
-        parent.implicitTrap = true;
+        parent.mayNotReturn = true;
       }
     }
     void visitBreak(Break* curr) { parent.breakTargets.insert(curr->name); }
@@ -755,12 +747,17 @@ private:
       }
     }
     void visitArrayNew(ArrayNew* curr) {}
-    void visitArrayNewSeg(ArrayNewSeg* curr) {
+    void visitArrayNewData(ArrayNewData* curr) {
       // Traps on out of bounds access to segments or access to dropped
       // segments.
       parent.implicitTrap = true;
     }
-    void visitArrayInit(ArrayInit* curr) {}
+    void visitArrayNewElem(ArrayNewElem* curr) {
+      // Traps on out of bounds access to segments or access to dropped
+      // segments.
+      parent.implicitTrap = true;
+    }
+    void visitArrayNewFixed(ArrayNewFixed* curr) {}
     void visitArrayGet(ArrayGet* curr) {
       if (curr->ref->type.isNull()) {
         parent.trap = true;
@@ -799,6 +796,27 @@ private:
       // traps when a ref is null, or when out of bounds.
       parent.implicitTrap = true;
     }
+    void visitArrayFill(ArrayFill* curr) {
+      if (curr->ref->type.isNull()) {
+        parent.trap = true;
+        return;
+      }
+      parent.writesArray = true;
+      // Traps when the destination is null or when out of bounds.
+      parent.implicitTrap = true;
+    }
+    template<typename ArrayInit> void visitArrayInit(ArrayInit* curr) {
+      if (curr->ref->type.isNull()) {
+        parent.trap = true;
+        return;
+      }
+      parent.writesArray = true;
+      // Traps when the destination is null, when out of bounds in source or
+      // destination, or when the source segment has been dropped.
+      parent.implicitTrap = true;
+    }
+    void visitArrayInitData(ArrayInitData* curr) { visitArrayInit(curr); }
+    void visitArrayInitElem(ArrayInitElem* curr) { visitArrayInit(curr); }
     void visitRefAs(RefAs* curr) {
       if (curr->op == ExternInternalize || curr->op == ExternExternalize) {
         // These conversions are infallible.
@@ -821,13 +839,13 @@ private:
       switch (curr->op) {
         case StringNewUTF8:
         case StringNewWTF8:
-        case StringNewReplace:
+        case StringNewLossyUTF8:
         case StringNewWTF16:
           parent.readsMemory = true;
           break;
         case StringNewUTF8Array:
         case StringNewWTF8Array:
-        case StringNewReplaceArray:
+        case StringNewLossyUTF8Array:
         case StringNewWTF16Array:
           parent.readsArray = true;
           break;
@@ -845,11 +863,13 @@ private:
       parent.implicitTrap = true;
       switch (curr->op) {
         case StringEncodeUTF8:
+        case StringEncodeLossyUTF8:
         case StringEncodeWTF8:
         case StringEncodeWTF16:
           parent.writesMemory = true;
           break;
         case StringEncodeUTF8Array:
+        case StringEncodeLossyUTF8Array:
         case StringEncodeWTF8Array:
         case StringEncodeWTF16Array:
           parent.writesArray = true;
@@ -1002,11 +1022,6 @@ public:
   }
 
 private:
-  void pre() {
-    breakTargets.clear();
-    delegateTargets.clear();
-  }
-
   void post() {
     assert(tryDepth == 0);
 

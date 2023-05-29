@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.10.2)
 # to reduce this for compatability with emsdk.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14" CACHE STRING "Minimum OS X deployment version")
 
-project(binaryen LANGUAGES C CXX VERSION 111)
+project(binaryen LANGUAGES C CXX VERSION 113)
 include(GNUInstallDirs)
 
 # The C++ standard whose features are required to build Binaryen.
@@ -45,6 +45,9 @@ option(BUILD_EMSCRIPTEN_TOOLS_ONLY "Build only tools needed by emscripten" OFF)
 
 # Turn this on to build binaryen.js as ES5, with additional compatibility configuration for js_of_ocaml.
 option(JS_OF_OCAML "Build binaryen.js for js_of_ocaml" OFF)
+
+# Turn this on to use the Wasm EH feature instead of emscripten EH in the wasm/BinaryenJS builds
+option(EMSCRIPTEN_ENABLE_WASM_EH "Enable Wasm EH feature in emscripten build" OFF)
 
 # For git users, attempt to generate a more useful version string
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
@@ -287,9 +290,7 @@ else()
   elseif(NOT EMSCRIPTEN)
     add_compile_flag("-fPIC")
   endif()
-  add_debug_compile_flag("-O0")
   add_debug_compile_flag("-g3")
-  add_nondebug_compile_flag("-O2")
   if(BYN_ENABLE_ASSERTIONS)
     # On non-Debug builds cmake automatically defines NDEBUG, so we
     # explicitly undefine it:
@@ -302,19 +303,36 @@ else()
 endif()
 
 if(EMSCRIPTEN)
-  if("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+  # Note: to debug with DWARF you will usually want to enable BIGINT support, as
+  # that helps avoid running Binaryen on the wasm after link. Binaryen's DWARF
+  # rewriting has known limitations, so avoiding it during link is recommended
+  # where possible (like local debugging).
+  #
+  # Note that this is debug info for Binaryen itself, that is, when you are
+  # debugging Binaryen source code. This flag has no impact on what Binaryen
+  # does when run on wasm files.
+  option(ENABLE_BIGINT "Enable wasm BigInt support" OFF)
+  if(ENABLE_BIGINT)
     add_link_flag("-sERROR_ON_WASM_CHANGES_AFTER_LINK")
     add_link_flag("-sWASM_BIGINT")
-  else()
-    # link with -O3 for metadce and other powerful optimizations. note that we
-    # must use add_link_options so that this appears after CMake's default -O2
-    add_link_options("-O3")
+  endif()
+
+  if("${CMAKE_BUILD_TYPE}" MATCHES "Release")
     add_link_flag("-sSINGLE_FILE")
+    # Extra check that cmake has set -O3 in its release flags.
+    # This is really as an assertion that cmake is behaving as we expect.
+    if(NOT CMAKE_CXX_FLAGS_RELEASE_INIT MATCHES "-O3")
+      message(FATAL_ERROR "Expected -O3 to be in release link flags")
+    endif()
   endif()
 
   add_link_flag("-sALLOW_MEMORY_GROWTH")
-  add_compile_flag("-sDISABLE_EXCEPTION_CATCHING=0")
-  add_link_flag("-sDISABLE_EXCEPTION_CATCHING=0")
+  if(EMSCRIPTEN_ENABLE_WASM_EH)
+    add_compile_flag("-fwasm-exceptions")
+  else()
+    add_compile_flag("-sDISABLE_EXCEPTION_CATCHING=0")
+    add_link_flag("-sDISABLE_EXCEPTION_CATCHING=0")
+  endif()
   # make the tools immediately usable on Node.js
   add_link_flag("-sNODERAWFS")
   # in opt builds, LTO helps so much (>20%) it's worth slow compile times
@@ -341,6 +359,7 @@ add_subdirectory(src/emscripten-optimizer)
 add_subdirectory(src/passes)
 add_subdirectory(src/support)
 add_subdirectory(src/wasm)
+add_subdirectory(src/analysis)
 
 if(BUILD_TOOLS)
   # Build binaryen tools
@@ -365,7 +384,8 @@ set(binaryen_objs
     $<TARGET_OBJECTS:emscripten-optimizer>
     $<TARGET_OBJECTS:ir>
     $<TARGET_OBJECTS:cfg>
-    $<TARGET_OBJECTS:support>)
+    $<TARGET_OBJECTS:support>
+    $<TARGET_OBJECTS:analysis>)
 
 if(BUILD_LLVM_DWARF)
   SET(binaryen_objs ${binaryen_objs} $<TARGET_OBJECTS:llvm_dwarf>)
@@ -412,12 +432,12 @@ if(EMSCRIPTEN)
   # binaryen.js WebAssembly variant
   add_executable(binaryen_wasm
                  ${binaryen_emscripten_SOURCES})
-  target_link_libraries(binaryen_wasm wasm asmjs emscripten-optimizer passes ir cfg support wasm)
+  target_link_libraries(binaryen_wasm wasm asmjs emscripten-optimizer passes ir cfg support analysis wasm)
   target_link_libraries(binaryen_wasm "-sFILESYSTEM")
   target_link_libraries(binaryen_wasm "-sEXPORT_NAME=Binaryen")
   target_link_libraries(binaryen_wasm "-sNODERAWFS=0")
   target_link_libraries(binaryen_wasm "-sEXPORT_ES6")
-  target_link_libraries(binaryen_wasm "-sEXPORTED_RUNTIME_METHODS=allocateUTF8OnStack")
+  target_link_libraries(binaryen_wasm "-sEXPORTED_RUNTIME_METHODS=allocateUTF8OnStack,stringToAscii")
   target_link_libraries(binaryen_wasm "-sEXPORTED_FUNCTIONS=_malloc,_free")
   target_link_libraries(binaryen_wasm "--post-js=${CMAKE_CURRENT_SOURCE_DIR}/src/js/binaryen.js-post.js")
   target_link_libraries(binaryen_wasm "-msign-ext")
@@ -433,7 +453,7 @@ if(EMSCRIPTEN)
   # binaryen.js JavaScript variant
   add_executable(binaryen_js
                  ${binaryen_emscripten_SOURCES})
-  target_link_libraries(binaryen_js wasm asmjs emscripten-optimizer passes ir cfg support wasm)
+  target_link_libraries(binaryen_js wasm asmjs emscripten-optimizer passes ir cfg support analysis wasm)
   target_link_libraries(binaryen_js "-sWASM=0")
   target_link_libraries(binaryen_js "-sWASM_ASYNC_COMPILATION=0")
   if(${CMAKE_CXX_COMPILER_VERSION} STREQUAL "6.0.1")
@@ -456,7 +476,7 @@ if(EMSCRIPTEN)
   else()
     target_link_libraries(binaryen_js "-sEXPORT_ES6=1")
   endif()
-  target_link_libraries(binaryen_js "-sEXPORTED_RUNTIME_METHODS=allocateUTF8OnStack")
+  target_link_libraries(binaryen_js "-sEXPORTED_RUNTIME_METHODS=allocateUTF8OnStack,stringToAscii")
   target_link_libraries(binaryen_js "-sEXPORTED_FUNCTIONS=_malloc,_free")
   target_link_libraries(binaryen_js "--post-js=${CMAKE_CURRENT_SOURCE_DIR}/src/js/binaryen.js-post.js")
   # js_of_ocaml needs a specified variable with special comment to provide the library to consumers

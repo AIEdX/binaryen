@@ -22,12 +22,12 @@
 
   ;; CHECK:      (type $array (array (mut i8)))
   (type $array (array_subtype (mut i8) data))
-  ;; CHECK:      (type $none_=>_none (func))
-
   ;; CHECK:      (type $array16 (array (mut i16)))
   (type $array16 (array_subtype (mut i16) data))
 
   ;; CHECK:      (type $stringref_stringview_wtf8_stringview_wtf16_stringview_iter_stringref_stringview_wtf8_stringview_wtf16_stringview_iter_ref|string|_ref|stringview_wtf8|_ref|stringview_wtf16|_ref|stringview_iter|_=>_none (func (param stringref stringview_wtf8 stringview_wtf16 stringview_iter stringref stringview_wtf8 stringview_wtf16 stringview_iter (ref string) (ref stringview_wtf8) (ref stringview_wtf16) (ref stringview_iter))))
+
+  ;; CHECK:      (type $ref|string|_=>_none (func (param (ref string))))
 
   ;; CHECK:      (type $stringview_wtf16_=>_none (func (param stringview_wtf16)))
 
@@ -35,7 +35,11 @@
 
   ;; CHECK:      (type $stringref_ref|$array|_ref|$array16|_=>_none (func (param stringref (ref $array) (ref $array16))))
 
+  ;; CHECK:      (type $none_=>_none (func))
+
   ;; CHECK:      (type $ref|$array|_=>_none (func (param (ref $array))))
+
+  ;; CHECK:      (type $stringref_=>_i32 (func (param stringref) (result i32)))
 
   ;; CHECK:      (global $string-const stringref (string.const "string in a global \01\ff\00\t\t\n\n\r\r\"\"\'\'\\\\"))
   (global $string-const stringref (string.const "string in a global \01\ff\00\t\09\n\0a\r\0d\"\22\'\27\\\5c"))
@@ -107,25 +111,26 @@
     )
   )
 
-  ;; CHECK:      (func $string.const (type $none_=>_none)
-  ;; CHECK-NEXT:  (drop
+  ;; CHECK:      (func $string.const (type $ref|string|_=>_none) (param $param (ref string))
+  ;; CHECK-NEXT:  (call $string.const
   ;; CHECK-NEXT:   (string.const "foo")
   ;; CHECK-NEXT:  )
-  ;; CHECK-NEXT:  (drop
+  ;; CHECK-NEXT:  (call $string.const
   ;; CHECK-NEXT:   (string.const "foo")
   ;; CHECK-NEXT:  )
-  ;; CHECK-NEXT:  (drop
+  ;; CHECK-NEXT:  (call $string.const
   ;; CHECK-NEXT:   (string.const "bar")
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT: )
-  (func $string.const
-    (drop
+  (func $string.const (param $param (ref string))
+    ;; Use calls to avoid precompute removing dropped constants.
+    (call $string.const
       (string.const "foo")
     )
-    (drop
+    (call $string.const
       (string.const "foo") ;; intentionally repeat the previous one
     )
-    (drop
+    (call $string.const
       (string.const "bar")
     )
   )
@@ -179,6 +184,14 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT:  (drop
+  ;; CHECK-NEXT:   (i32.eqz
+  ;; CHECK-NEXT:    (string.encode_wtf8 replace
+  ;; CHECK-NEXT:     (local.get $ref)
+  ;; CHECK-NEXT:     (i32.const 10)
+  ;; CHECK-NEXT:    )
+  ;; CHECK-NEXT:   )
+  ;; CHECK-NEXT:  )
+  ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (string.encode_wtf8 utf8
   ;; CHECK-NEXT:    (local.get $ref)
   ;; CHECK-NEXT:    (i32.const 20)
@@ -195,6 +208,14 @@
     (drop
       (i32.eqz ;; validate the output is i32
         (string.encode_wtf8 wtf8
+          (local.get $ref)
+          (i32.const 10)
+        )
+      )
+    )
+    (drop
+      (i32.eqz ;; validate the output is i32
+        (string.encode_wtf8 replace
           (local.get $ref)
           (i32.const 10)
         )
@@ -541,6 +562,15 @@
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
   ;; CHECK-NEXT:  (drop
+  ;; CHECK-NEXT:   (i32.eqz
+  ;; CHECK-NEXT:    (string.encode_wtf8_array replace
+  ;; CHECK-NEXT:     (local.get $ref)
+  ;; CHECK-NEXT:     (local.get $array)
+  ;; CHECK-NEXT:     (i32.const 10)
+  ;; CHECK-NEXT:    )
+  ;; CHECK-NEXT:   )
+  ;; CHECK-NEXT:  )
+  ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (string.encode_wtf8_array utf8
   ;; CHECK-NEXT:    (local.get $ref)
   ;; CHECK-NEXT:    (local.get $array)
@@ -559,6 +589,15 @@
     (drop
       (i32.eqz ;; validate the output is i32
         (string.encode_wtf8_array wtf8
+          (local.get $ref)
+          (local.get $array)
+          (i32.const 10)
+        )
+      )
+    )
+    (drop
+      (i32.eqz ;; validate the output is i32
+        (string.encode_wtf8_array replace
           (local.get $ref)
           (local.get $array)
           (i32.const 10)
@@ -624,6 +663,17 @@
         (i32.const 3)
         (i32.const 4)
       )
+    )
+  )
+
+  ;; CHECK:      (func $string.hash (type $stringref_=>_i32) (param $ref stringref) (result i32)
+  ;; CHECK-NEXT:  (string.hash
+  ;; CHECK-NEXT:   (local.get $ref)
+  ;; CHECK-NEXT:  )
+  ;; CHECK-NEXT: )
+  (func $string.hash (param $ref stringref) (result i32)
+    (string.hash
+      (local.get $ref)
     )
   )
 )

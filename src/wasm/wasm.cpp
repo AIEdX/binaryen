@@ -947,9 +947,23 @@ void RefCast::finalize() {
     type = Type::unreachable;
     return;
   }
-  // Do not unnecessarily lose non-nullability information.
+
+  // Do not unnecessarily lose non-nullability info. We could leave this for
+  // optimizations, but doing it here as part of finalization/refinalization
+  // ensures that type information flows through in an optimal manner and can be
+  // used as soon as possible.
   if (ref->type.isNonNullable() && type.isNullable()) {
     type = Type(type.getHeapType(), NonNullable);
+  }
+
+  // Do not unnecessarily lose heap type info, as above for nullability. Note
+  // that we must check if the ref has a heap type, as we reach this before
+  // validation, which will error if the ref does not in fact have a heap type.
+  // (This is a downside of propagating type information here, as opposed to
+  // leaving it for an optimization pass.)
+  if (ref->type.isRef() &&
+      HeapType::isSubType(ref->type.getHeapType(), type.getHeapType())) {
+    type = Type(ref->type.getHeapType(), type.getNullability());
   }
 }
 
@@ -1057,13 +1071,19 @@ void ArrayNew::finalize() {
   }
 }
 
-void ArrayNewSeg::finalize() {
+void ArrayNewData::finalize() {
   if (offset->type == Type::unreachable || size->type == Type::unreachable) {
     type = Type::unreachable;
   }
 }
 
-void ArrayInit::finalize() {
+void ArrayNewElem::finalize() {
+  if (offset->type == Type::unreachable || size->type == Type::unreachable) {
+    type = Type::unreachable;
+  }
+}
+
+void ArrayNewFixed::finalize() {
   for (auto* value : values) {
     if (value->type == Type::unreachable) {
       type = Type::unreachable;
@@ -1103,6 +1123,33 @@ void ArrayCopy::finalize() {
       destRef->type == Type::unreachable ||
       destIndex->type == Type::unreachable ||
       length->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::none;
+  }
+}
+
+void ArrayFill::finalize() {
+  if (ref->type == Type::unreachable || index->type == Type::unreachable ||
+      value->type == Type::unreachable || size->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::none;
+  }
+}
+
+void ArrayInitData::finalize() {
+  if (ref->type == Type::unreachable || index->type == Type::unreachable ||
+      offset->type == Type::unreachable || size->type == Type::unreachable) {
+    type = Type::unreachable;
+  } else {
+    type = Type::none;
+  }
+}
+
+void ArrayInitElem::finalize() {
+  if (ref->type == Type::unreachable || index->type == Type::unreachable ||
+      offset->type == Type::unreachable || size->type == Type::unreachable) {
     type = Type::unreachable;
   } else {
     type = Type::none;
@@ -1568,43 +1615,55 @@ void Module::removeTags(std::function<bool(Tag*)> pred) {
   removeModuleElements(tags, tagsMap, pred);
 }
 
+void Module::updateFunctionsMap() {
+  functionsMap.clear();
+  for (auto& curr : functions) {
+    functionsMap[curr->name] = curr.get();
+  }
+  assert(functionsMap.size() == functions.size());
+}
+
 void Module::updateDataSegmentsMap() {
   dataSegmentsMap.clear();
   for (auto& curr : dataSegments) {
     dataSegmentsMap[curr->name] = curr.get();
   }
+  assert(dataSegmentsMap.size() == dataSegments.size());
 }
 
 void Module::updateMaps() {
-  functionsMap.clear();
-  for (auto& curr : functions) {
-    functionsMap[curr->name] = curr.get();
-  }
+  updateFunctionsMap();
   exportsMap.clear();
   for (auto& curr : exports) {
     exportsMap[curr->name] = curr.get();
   }
+  assert(exportsMap.size() == exports.size());
   tablesMap.clear();
   for (auto& curr : tables) {
     tablesMap[curr->name] = curr.get();
   }
+  assert(tablesMap.size() == tables.size());
   elementSegmentsMap.clear();
   for (auto& curr : elementSegments) {
     elementSegmentsMap[curr->name] = curr.get();
   }
+  assert(elementSegmentsMap.size() == elementSegments.size());
   memoriesMap.clear();
   for (auto& curr : memories) {
     memoriesMap[curr->name] = curr.get();
   }
+  assert(memoriesMap.size() == memories.size());
   updateDataSegmentsMap();
   globalsMap.clear();
   for (auto& curr : globals) {
     globalsMap[curr->name] = curr.get();
   }
+  assert(globalsMap.size() == globals.size());
   tagsMap.clear();
   for (auto& curr : tags) {
     tagsMap[curr->name] = curr.get();
   }
+  assert(tagsMap.size() == tags.size());
 }
 
 void Module::clearDebugInfo() { debugInfoFileNames.clear(); }

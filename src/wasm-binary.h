@@ -1110,7 +1110,7 @@ enum ASTNodes {
   ArrayLenAnnotated = 0x17,
   ArrayCopy = 0x18,
   ArrayLen = 0x19,
-  ArrayInitStatic = 0x1a,
+  ArrayNewFixed = 0x1a,
   ArrayNew = 0x1b,
   ArrayNewDefault = 0x1c,
   ArrayNewData = 0x1d,
@@ -1130,8 +1130,6 @@ enum ASTNodes {
   BrOnCastNull = 0x4a,
   BrOnCastFailNull = 0x4b,
   RefCastNop = 0x4c,
-  RefIsFunc = 0x50,
-  RefIsI31 = 0x52,
   RefAsFunc = 0x58,
   RefAsI31 = 0x5a,
   BrOnFunc = 0x60,
@@ -1140,16 +1138,24 @@ enum ASTNodes {
   BrOnNonI31 = 0x65,
   ExternInternalize = 0x70,
   ExternExternalize = 0x71,
-  StringNewWTF8 = 0x80,
+  ArrayFill = 0x0f,
+  ArrayInitData = 0x54,
+  ArrayInitElem = 0x55,
+  StringNewUTF8 = 0x80,
   StringNewWTF16 = 0x81,
   StringConst = 0x82,
+  StringMeasureUTF8 = 0x83,
   StringMeasureWTF8 = 0x84,
   StringMeasureWTF16 = 0x85,
-  StringEncodeWTF8 = 0x86,
+  StringEncodeUTF8 = 0x86,
   StringEncodeWTF16 = 0x87,
   StringConcat = 0x88,
   StringEq = 0x89,
   StringIsUSV = 0x8a,
+  StringNewLossyUTF8 = 0x8b,
+  StringNewWTF8 = 0x8c,
+  StringEncodeLossyUTF8 = 0x8d,
+  StringEncodeWTF8 = 0x8e,
   StringNewUTF8Try = 0x8f,
   StringAsWTF8 = 0x90,
   StringViewWTF8Advance = 0x91,
@@ -1165,10 +1171,15 @@ enum ASTNodes {
   StringViewIterSlice = 0xa4,
   StringCompare = 0xa8,
   StringFromCodePoint = 0xa9,
-  StringNewWTF8Array = 0xb0,
+  StringHash = 0xaa,
+  StringNewUTF8Array = 0xb0,
   StringNewWTF16Array = 0xb1,
-  StringEncodeWTF8Array = 0xb2,
+  StringEncodeUTF8Array = 0xb2,
   StringEncodeWTF16Array = 0xb3,
+  StringNewLossyUTF8Array = 0xb4,
+  StringNewWTF8Array = 0xb5,
+  StringEncodeLossyUTF8Array = 0xb6,
+  StringEncodeWTF8Array = 0xb7,
   StringNewUTF8ArrayTry = 0xb8,
 };
 
@@ -1179,12 +1190,6 @@ enum MemoryAccess {
 };
 
 enum MemoryFlags { HasMaximum = 1 << 0, IsShared = 1 << 1, Is64 = 1 << 2 };
-
-enum StringPolicy {
-  UTF8 = 0x00,
-  WTF8 = 0x01,
-  Replace = 0x02,
-};
 
 enum FeaturePrefix {
   FeatureUsed = '+',
@@ -1326,6 +1331,8 @@ public:
   uint32_t getMemoryIndex(Name name) const;
   uint32_t getGlobalIndex(Name name) const;
   uint32_t getTagIndex(Name name) const;
+  uint32_t getDataSegmentIndex(Name name) const;
+  uint32_t getElementSegmentIndex(Name name) const;
   uint32_t getTypeIndex(HeapType type) const;
   uint32_t getStringIndex(Name string) const;
 
@@ -1429,7 +1436,12 @@ class WasmBinaryBuilder {
   MixedArena& allocator;
   const std::vector<char>& input;
   std::istream* sourceMap;
-  std::pair<uint32_t, Function::DebugLocation> nextDebugLocation;
+  struct NextDebugLocation {
+    uint32_t availablePos;
+    uint32_t previousPos;
+    Function::DebugLocation next;
+  };
+  NextDebugLocation nextDebugLocation;
   bool debugInfo = true;
   bool DWARF = false;
   bool skipFunctionBodies = false;
@@ -1502,6 +1514,8 @@ public:
   Name getMemoryName(Index index);
   Name getGlobalName(Index index);
   Name getTagName(Index index);
+  Name getDataName(Index index);
+  Name getElemName(Index index);
 
   // gets a memory in the combined import+defined space
   Memory* getMemory(Index index);
@@ -1551,6 +1565,12 @@ public:
 
   // at index i we have all refs to the tag i
   std::map<Index, std::vector<Name*>> tagRefs;
+
+  // at index i we have all refs to the data segment i
+  std::map<Index, std::vector<Name*>> dataRefs;
+
+  // at index i we have all refs to the element segment i
+  std::map<Index, std::vector<Name*>> elemRefs;
 
   // Throws a parsing error if we are not in a function context
   void requireFunctionContext(const char* error);
@@ -1710,13 +1730,15 @@ public:
   bool maybeVisitStructNew(Expression*& out, uint32_t code);
   bool maybeVisitStructGet(Expression*& out, uint32_t code);
   bool maybeVisitStructSet(Expression*& out, uint32_t code);
-  bool maybeVisitArrayNew(Expression*& out, uint32_t code);
-  bool maybeVisitArrayNewSeg(Expression*& out, uint32_t code);
-  bool maybeVisitArrayInit(Expression*& out, uint32_t code);
+  bool maybeVisitArrayNewData(Expression*& out, uint32_t code);
+  bool maybeVisitArrayNewElem(Expression*& out, uint32_t code);
+  bool maybeVisitArrayNewFixed(Expression*& out, uint32_t code);
   bool maybeVisitArrayGet(Expression*& out, uint32_t code);
   bool maybeVisitArraySet(Expression*& out, uint32_t code);
   bool maybeVisitArrayLen(Expression*& out, uint32_t code);
   bool maybeVisitArrayCopy(Expression*& out, uint32_t code);
+  bool maybeVisitArrayFill(Expression*& out, uint32_t code);
+  bool maybeVisitArrayInit(Expression*& out, uint32_t code);
   bool maybeVisitStringNew(Expression*& out, uint32_t code);
   bool maybeVisitStringConst(Expression*& out, uint32_t code);
   bool maybeVisitStringMeasure(Expression*& out, uint32_t code);
@@ -1739,7 +1761,6 @@ public:
   void visitDrop(Drop* curr);
   void visitRefNull(RefNull* curr);
   void visitRefIsNull(RefIsNull* curr);
-  void visitRefIs(RefTest* curr, uint8_t code);
   void visitRefFunc(RefFunc* curr);
   void visitRefEq(RefEq* curr);
   void visitTableGet(TableGet* curr);

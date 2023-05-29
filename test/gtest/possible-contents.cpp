@@ -66,11 +66,6 @@ static std::unique_ptr<Module> parse(std::string module) {
 // that.
 class PossibleContentsTest : public testing::Test {
 protected:
-  void SetUp() override {
-    // Use nominal typing to test struct types.
-    wasm::setTypeSystem(TypeSystem::Nominal);
-  }
-
   Type anyref = Type(HeapType::any, Nullable);
   Type funcref = Type(HeapType::func, Nullable);
   Type i31ref = Type(HeapType::i31, Nullable);
@@ -542,6 +537,7 @@ TEST_F(PossibleContentsTest, TestStructCones) {
             D
   */
   TypeBuilder builder(5);
+  builder.createRecGroup(0, 5);
   builder.setHeapType(0, Struct(FieldList{}));
   builder.setHeapType(1, Struct(FieldList{}));
   builder.setHeapType(2, Struct(FieldList{}));
@@ -787,18 +783,28 @@ TEST_F(PossibleContentsTest, TestStructCones) {
                      PossibleContents::fullConeType(nnD),
                      none);
 
-  // Globals stay as globals if their type is in the cone. Otherwise, they lose
-  // the global info and we compute a normal cone intersection on them. The
-  // same for literals.
+  // Globals stay as globals, but their type might get refined.
   assertIntersection(
     funcGlobal, PossibleContents::fullConeType(funcref), funcGlobal);
 
+  // No global filtering.
   auto signature = Type(Signature(Type::none, Type::none), Nullable);
   assertIntersection(
     nonNullFunc, PossibleContents::fullConeType(signature), nonNullFunc);
+
+  // Filter a global to a more specific type.
   assertIntersection(funcGlobal,
                      PossibleContents::fullConeType(signature),
-                     PossibleContents::fullConeType(signature));
+                     PossibleContents::global("funcGlobal", signature));
+
+  // Filter a global's nullability only.
+  auto nonNullFuncRef = Type(HeapType::func, NonNullable);
+  assertIntersection(funcGlobal,
+                     PossibleContents::fullConeType(nonNullFuncRef),
+                     nonNullFuncGlobal);
+
+  // Incompatible global and cone types have no intersection.
+  assertIntersection(funcGlobal, PossibleContents::fullConeType(nullE), none);
 
   // Incompatible hierarchies have no intersection.
   assertIntersection(

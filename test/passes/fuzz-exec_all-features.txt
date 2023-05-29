@@ -74,7 +74,7 @@
  (type $i32_=>_none (func (param i32)))
  (type $i32_i32_=>_none (func (param i32 i32)))
  (type $none_=>_none (func))
- (import "fuzzing-support" "log-i32" (func $fimport$0 (param i32)))
+ (import "fuzzing-support" "log-i32" (func $fimport$0 (type $i32_=>_none) (param i32)))
  (memory $0 (shared 1 1))
  (export "unaligned_load" (func $0))
  (export "unaligned_load_offset" (func $1))
@@ -149,7 +149,7 @@
 (module
  (type $none_=>_i32 (func (result i32)))
  (memory $0 (shared 1 1))
- (data (i32.const 0) "\ff\ff")
+ (data $0 (i32.const 0) "\ff\ff")
  (export "unsigned_2_bytes" (func $0))
  (func $0 (type $none_=>_i32) (result i32)
   (i32.atomic.rmw16.xor_u
@@ -166,7 +166,7 @@
 (module
  (type $i32_=>_none (func (param i32)))
  (type $none_=>_none (func))
- (import "fuzzing-support" "log-i32" (func $fimport$0 (param i32)))
+ (import "fuzzing-support" "log-i32" (func $fimport$0 (type $i32_=>_none) (param i32)))
  (memory $0 (shared 1 1))
  (export "rmw-reads-modifies-and-writes" (func $0))
  (func $0 (type $none_=>_none)
@@ -191,7 +191,7 @@
 (module
  (type $i32_=>_none (func (param i32)))
  (type $none_=>_none (func))
- (import "fuzzing-support" "log-i32" (func $fimport$0 (param i32)))
+ (import "fuzzing-support" "log-i32" (func $fimport$0 (type $i32_=>_none) (param i32)))
  (memory $0 (shared 1 1))
  (export "rmw-reads-modifies-and-writes-asymmetrical" (func $0))
  (func $0 (type $none_=>_none)

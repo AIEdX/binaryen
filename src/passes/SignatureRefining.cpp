@@ -30,6 +30,7 @@
 #include "ir/find_all.h"
 #include "ir/lubs.h"
 #include "ir/module-utils.h"
+#include "ir/subtypes.h"
 #include "ir/type-updating.h"
 #include "ir/utils.h"
 #include "pass.h"
@@ -139,7 +140,21 @@ struct SignatureRefining : public Pass {
       allInfo[exportedFunc->type].canModify = false;
     }
 
-    bool refinedResults = false;
+    // For now, do not optimize types that have subtypes. When we modify such a
+    // type we need to modify subtypes as well, similar to the analysis in
+    // TypeRefining, and perhaps we can unify this pass with that. TODO
+    SubTypes subTypes(*module);
+    for (auto& [type, info] : allInfo) {
+      if (!subTypes.getStrictSubTypes(type).empty()) {
+        info.canModify = false;
+      } else if (type.getSuperType()) {
+        // Also avoid modifying types with supertypes, as we do not handle
+        // contravariance here. That is, when we refine parameters we look for
+        // a more refined type, but the type must be *less* refined than the
+        // param type for the parent (or equal) TODO
+        info.canModify = false;
+      }
+    }
 
     // Compute optimal LUBs.
     std::unordered_set<HeapType> seen;
@@ -208,8 +223,6 @@ struct SignatureRefining : public Pass {
       newSignatures[type] = Signature(newParams, newResults);
 
       if (newResults != func->getResults()) {
-        refinedResults = true;
-
         // Update the types of calls using the signature.
         for (auto* call : info.calls) {
           if (call->type != Type::unreachable) {
@@ -271,11 +284,8 @@ struct SignatureRefining : public Pass {
     // Rewrite the types.
     GlobalTypeRewriter::updateSignatures(newSignatures, *module);
 
-    if (refinedResults) {
-      // After return types change we need to propagate.
-      // TODO: we could do this only in relevant functions perhaps
-      ReFinalize().run(getPassRunner(), module);
-    }
+    // TODO: we could do this only in relevant functions perhaps
+    ReFinalize().run(getPassRunner(), module);
   }
 };
 

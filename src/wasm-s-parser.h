@@ -124,7 +124,9 @@ class SExpressionWasmBuilder {
 
   std::vector<Name> functionNames;
   std::vector<Name> tableNames;
+  std::vector<Name> elemSegmentNames;
   std::vector<Name> memoryNames;
+  std::vector<Name> dataSegmentNames;
   std::vector<Name> globalNames;
   std::vector<Name> tagNames;
   int functionCounter = 0;
@@ -170,7 +172,9 @@ private:
 
   Name getFunctionName(Element& s);
   Name getTableName(Element& s);
+  Name getElemSegmentName(Element& s);
   Name getMemoryName(Element& s);
+  Name getDataSegmentName(Element& s);
   Name getGlobalName(Element& s);
   Name getTagName(Element& s);
   void parseStart(Element& s) { wasm.addStart(getFunctionName(*s[1])); }
@@ -296,12 +300,16 @@ private:
   Expression* makeStructGet(Element& s, bool signed_ = false);
   Expression* makeStructSet(Element& s);
   Expression* makeArrayNew(Element& s, bool default_);
-  Expression* makeArrayNewSeg(Element& s, ArrayNewSegOp op);
-  Expression* makeArrayInitStatic(Element& s);
+  Expression* makeArrayNewData(Element& s);
+  Expression* makeArrayNewElem(Element& s);
+  Expression* makeArrayNewFixed(Element& s);
   Expression* makeArrayGet(Element& s, bool signed_ = false);
   Expression* makeArraySet(Element& s);
   Expression* makeArrayLen(Element& s);
   Expression* makeArrayCopy(Element& s);
+  Expression* makeArrayFill(Element& s);
+  Expression* makeArrayInitData(Element& s);
+  Expression* makeArrayInitElem(Element& s);
   Expression* makeRefAs(Element& s, RefAsOp op);
   Expression* makeRefAsNonNull(Element& s);
   Expression* makeStringNew(Element& s, StringNewOp op, bool try_);

@@ -101,6 +101,9 @@ void PassRegistry::registerPasses() {
                "removes arguments to calls in an lto-like manner, and "
                "optimizes where we removed",
                createDAEOptimizingPass);
+  registerPass("abstract-type-refining",
+               "refine and merge abstract (never-created) types",
+               createAbstractTypeRefiningPass);
   registerPass("coalesce-locals",
                "reduce # of locals by coalescing",
                createCoalesceLocalsPass);
@@ -405,7 +408,8 @@ void PassRegistry::registerPasses() {
                "apply more specific subtypes to signature types where possible",
                createSignatureRefiningPass);
   registerPass("signext-lowering",
-               "lower sign-ext operations to wasm mvp",
+               "lower sign-ext operations to wasm mvp and disable the sign "
+               "extension feature",
                createSignExtLoweringPass);
   registerPass("simplify-globals",
                "miscellaneous globals-related optimizations",
@@ -626,6 +630,7 @@ void PassRunner::addDefaultGlobalOptimizationPrePasses() {
       addIfNoDWARFIssues("remove-unused-types");
       addIfNoDWARFIssues("cfp");
       addIfNoDWARFIssues("gsi");
+      addIfNoDWARFIssues("abstract-type-refining");
     }
   }
   // TODO: generate-global-effects here, right before function passes, then

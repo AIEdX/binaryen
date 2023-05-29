@@ -789,6 +789,10 @@ struct NullInstrParserCtx {
   InstrT makeArrayNewData(Index, HeapTypeT, DataIdxT) {
     return Ok{};
   }
+  template<typename HeapTypeT>
+  InstrT makeArrayNewElem(Index, HeapTypeT, DataIdxT) {
+    return Ok{};
+  }
   template<typename HeapTypeT> InstrT makeArrayGet(Index, HeapTypeT, bool) {
     return Ok{};
   }
@@ -798,6 +802,9 @@ struct NullInstrParserCtx {
   InstrT makeArrayLen(Index) { return Ok{}; }
   template<typename HeapTypeT>
   InstrT makeArrayCopy(Index, HeapTypeT, HeapTypeT) {
+    return Ok{};
+  }
+  template<typename HeapTypeT> InstrT makeArrayFill(Index, HeapTypeT) {
     return Ok{};
   }
 };
@@ -1284,7 +1291,7 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
   using LocalIdxT = Index;
   using GlobalIdxT = Name;
   using MemoryIdxT = Name;
-  using DataIdxT = uint32_t;
+  using DataIdxT = Name;
 
   using MemargT = Memarg;
 
@@ -1550,20 +1557,18 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
     return name;
   }
 
-  Result<uint32_t> getDataFromIdx(uint32_t idx) {
+  Result<Name> getDataFromIdx(uint32_t idx) {
     if (idx >= wasm.dataSegments.size()) {
       return in.err("data index out of bounds");
     }
-    return idx;
+    return wasm.dataSegments[idx]->name;
   }
 
-  Result<uint32_t> getDataFromName(Name name) {
-    for (uint32_t i = 0; i < wasm.dataSegments.size(); ++i) {
-      if (wasm.dataSegments[i]->name == name) {
-        return i;
-      }
+  Result<Name> getDataFromName(Name name) {
+    if (!wasm.getDataSegmentOrNull(name)) {
+      return in.err("data $" + name.toString() + " does not exist");
     }
-    return in.err("data $" + name.toString() + " does not exist");
+    return name;
   }
 
   Result<TypeUseT> makeTypeUse(Index pos,
@@ -1984,7 +1989,7 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
                   op, memarg.offset, memarg.align, lane, *ptr, *vec, *m));
   }
 
-  Result<> makeMemoryInit(Index pos, Name* mem, uint32_t data) {
+  Result<> makeMemoryInit(Index pos, Name* mem, Name data) {
     auto m = getMemory(pos, mem);
     CHECK_ERR(m);
     auto size = pop(pos);
@@ -1996,7 +2001,7 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
     return push(pos, builder.makeMemoryInit(data, *dest, *offset, *size, *m));
   }
 
-  Result<> makeDataDrop(Index pos, uint32_t data) {
+  Result<> makeDataDrop(Index pos, Name data) {
     return push(pos, builder.makeDataDrop(data));
   }
 
@@ -2147,7 +2152,7 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
     return push(pos, builder.makeArrayNew(type, *size));
   }
 
-  Result<> makeArrayNewData(Index pos, HeapType type, uint32_t data) {
+  Result<> makeArrayNewData(Index pos, HeapType type, Name data) {
     if (!type.isArray()) {
       return in.err(pos, "expected array type annotation");
     }
@@ -2155,8 +2160,18 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
     CHECK_ERR(size);
     auto offset = pop(pos);
     CHECK_ERR(offset);
-    return push(pos,
-                builder.makeArrayNewSeg(NewData, type, data, *offset, *size));
+    return push(pos, builder.makeArrayNewData(type, data, *offset, *size));
+  }
+
+  Result<> makeArrayNewElem(Index pos, HeapType type, Name data) {
+    if (!type.isArray()) {
+      return in.err(pos, "expected array type annotation");
+    }
+    auto size = pop(pos);
+    CHECK_ERR(size);
+    auto offset = pop(pos);
+    CHECK_ERR(offset);
+    return push(pos, builder.makeArrayNewElem(type, data, *offset, *size));
   }
 
   Result<> makeArrayGet(Index pos, HeapType type, bool signed_) {
@@ -2213,6 +2228,22 @@ struct ParseDefsCtx : TypeParserCtx<ParseDefsCtx> {
     CHECK_ERR(validateTypeAnnotation(pos, destType, *destRef));
     return push(
       pos, builder.makeArrayCopy(*destRef, *destIdx, *srcRef, *srcIdx, *len));
+  }
+
+  Result<> makeArrayFill(Index pos, HeapType type) {
+    if (!type.isArray()) {
+      return in.err(pos, "expected array type annotation");
+    }
+    auto size = pop(pos);
+    CHECK_ERR(size);
+    auto value = pop(pos);
+    CHECK_ERR(value);
+    auto index = pop(pos);
+    CHECK_ERR(index);
+    auto ref = pop(pos);
+    CHECK_ERR(ref);
+    CHECK_ERR(validateTypeAnnotation(pos, type, *ref));
+    return push(pos, builder.makeArrayFill(*ref, *index, *value, *size));
   }
 };
 
@@ -2363,14 +2394,21 @@ template<typename Ctx> Result<typename Ctx::InstrT> makeStructSet(Ctx&, Index);
 template<typename Ctx>
 Result<typename Ctx::InstrT> makeArrayNew(Ctx&, Index, bool default_);
 template<typename Ctx>
-Result<typename Ctx::InstrT> makeArrayNewSeg(Ctx&, Index, ArrayNewSegOp op);
+Result<typename Ctx::InstrT> makeArrayNewData(Ctx&, Index);
 template<typename Ctx>
-Result<typename Ctx::InstrT> makeArrayInitStatic(Ctx&, Index);
+Result<typename Ctx::InstrT> makeArrayNewElem(Ctx&, Index);
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayNewFixed(Ctx&, Index);
 template<typename Ctx>
 Result<typename Ctx::InstrT> makeArrayGet(Ctx&, Index, bool signed_ = false);
 template<typename Ctx> Result<typename Ctx::InstrT> makeArraySet(Ctx&, Index);
 template<typename Ctx> Result<typename Ctx::InstrT> makeArrayLen(Ctx&, Index);
 template<typename Ctx> Result<typename Ctx::InstrT> makeArrayCopy(Ctx&, Index);
+template<typename Ctx> Result<typename Ctx::InstrT> makeArrayFill(Ctx&, Index);
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayInitData(Ctx&, Index);
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayInitElem(Ctx&, Index);
 template<typename Ctx>
 Result<typename Ctx::InstrT> makeRefAs(Ctx&, Index, RefAsOp op);
 template<typename Ctx>
@@ -3508,24 +3546,25 @@ Result<typename Ctx::InstrT> makeArrayNew(Ctx& ctx, Index pos, bool default_) {
 }
 
 template<typename Ctx>
-Result<typename Ctx::InstrT>
-makeArrayNewSeg(Ctx& ctx, Index pos, ArrayNewSegOp op) {
+Result<typename Ctx::InstrT> makeArrayNewData(Ctx& ctx, Index pos) {
   auto type = typeidx(ctx);
   CHECK_ERR(type);
-  switch (op) {
-    case NewData: {
-      auto data = dataidx(ctx);
-      CHECK_ERR(data);
-      return ctx.makeArrayNewData(pos, *type, *data);
-    }
-    case NewElem:
-      return ctx.in.err("unimplemented instruction");
-  }
-  WASM_UNREACHABLE("unexpected op");
+  auto data = dataidx(ctx);
+  CHECK_ERR(data);
+  return ctx.makeArrayNewData(pos, *type, *data);
 }
 
 template<typename Ctx>
-Result<typename Ctx::InstrT> makeArrayInitStatic(Ctx& ctx, Index pos) {
+Result<typename Ctx::InstrT> makeArrayNewElem(Ctx& ctx, Index pos) {
+  auto type = typeidx(ctx);
+  CHECK_ERR(type);
+  auto data = dataidx(ctx);
+  CHECK_ERR(data);
+  return ctx.makeArrayNewElem(pos, *type, *data);
+}
+
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayNewFixed(Ctx& ctx, Index pos) {
   return ctx.in.err("unimplemented instruction");
 }
 
@@ -3555,6 +3594,23 @@ Result<typename Ctx::InstrT> makeArrayCopy(Ctx& ctx, Index pos) {
   auto srcType = typeidx(ctx);
   CHECK_ERR(srcType);
   return ctx.makeArrayCopy(pos, *destType, *srcType);
+}
+
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayFill(Ctx& ctx, Index pos) {
+  auto type = typeidx(ctx);
+  CHECK_ERR(type);
+  return ctx.makeArrayFill(pos, *type);
+}
+
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayInitData(Ctx& ctx, Index pos) {
+  return ctx.in.err("unimplemented instruction");
+}
+
+template<typename Ctx>
+Result<typename Ctx::InstrT> makeArrayInitElem(Ctx& ctx, Index pos) {
+  return ctx.in.err("unimplemented instruction");
 }
 
 template<typename Ctx>

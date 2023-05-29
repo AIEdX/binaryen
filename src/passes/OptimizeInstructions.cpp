@@ -262,6 +262,11 @@ struct OptimizeInstructions
   bool inReplaceCurrent = false;
 
   void replaceCurrent(Expression* rep) {
+    if (rep->type != getCurrent()->type) {
+      // This operation will change the type, so refinalize.
+      refinalize = true;
+    }
+
     WalkerPass<PostWalker<OptimizeInstructions>>::replaceCurrent(rep);
     // We may be able to apply multiple patterns as one may open opportunities
     // for others. NB: patterns must not have cycles
@@ -1283,7 +1288,7 @@ struct OptimizeInstructions
   }
 
   void visitCallRef(CallRef* curr) {
-    skipNonNullCast(curr->target);
+    skipNonNullCast(curr->target, curr);
     if (trapOnNull(curr, curr->target)) {
       return;
     }
@@ -1473,10 +1478,57 @@ struct OptimizeInstructions
   // See "notes on removing casts", above. However, in most cases removing a
   // non-null cast is obviously safe to do, since we only remove one if another
   // check will happen later.
-  void skipNonNullCast(Expression*& input) {
+  //
+  // We also pass in the parent, because we need to be careful about ordering:
+  // if the parent has other children than |input| then we may not be able to
+  // remove the trap. For example,
+  //
+  //  (struct.set
+  //   (ref.as_non_null X)
+  //   (call $foo)
+  //  )
+  //
+  // If X is null we'd trap before the call to $foo. If we remove the
+  // ref.as_non_null then the struct.set will still trap, of course, but that
+  // will only happen *after* the call, which is wrong.
+  void skipNonNullCast(Expression*& input, Expression* parent) {
+    // Check the other children for the ordering problem only if we find a
+    // possible optimization, to avoid wasted work.
+    bool checkedSiblings = false;
+    auto& options = getPassOptions();
     while (1) {
       if (auto* as = input->dynCast<RefAs>()) {
         if (as->op == RefAsNonNull) {
+          // The problem with effect ordering that is described above is not an
+          // issue if traps are assumed to never happen anyhow.
+          if (!checkedSiblings && !options.trapsNeverHappen) {
+            // We need to see if a child with side effects exists after |input|.
+            // If there is such a child, it is a problem as mentioned above (it
+            // is fine for such a child to appear *before* |input|, as then we
+            // wouldn't be reordering effects). Thus, all we need to do is
+            // accumulate the effects in children after |input|, as we want to
+            // move the trap across those.
+            bool seenInput = false;
+            EffectAnalyzer crossedEffects(options, *getModule());
+            for (auto* child : ChildIterator(parent)) {
+              if (child == input) {
+                seenInput = true;
+              } else if (seenInput) {
+                crossedEffects.walk(child);
+              }
+            }
+
+            // Check if the effects we cross interfere with the effects of the
+            // trap we want to move. (We use a shallow effect analyzer since we
+            // will only move the ref.as_non_null itself.)
+            ShallowEffectAnalyzer movingEffects(options, *getModule(), input);
+            if (crossedEffects.invalidates(movingEffects)) {
+              return;
+            }
+
+            // If we got here, we've checked the siblings and found no problem.
+            checkedSiblings = true;
+          }
           input = as->value;
           continue;
         }
@@ -1563,9 +1615,27 @@ struct OptimizeInstructions
       // TODO Worth thinking about an 'assume' instrinsic of some form that
       //      annotates knowledge about a value, or another mechanism to allow
       //      that information to be passed around.
+
+      // Note that we must check that the null is actually flowed out, that is,
+      // that control flow is not transferred before:
+      //
+      //    (if
+      //      (1)
+      //      (block (result null)
+      //        (return)
+      //      )
+      //      (other))
+      //
+      // The true arm has a bottom type, but in fact it just returns out of the
+      // function and the null does not actually flow out. We can only optimize
+      // here if a null definitely flows out (as only that would cause a trap).
+      auto flowsOutNull = [&](Expression* child) {
+        return child->type.isNull() && !effects(child).transfersControlFlow();
+      };
+
       if (auto* iff = ref->dynCast<If>()) {
         if (iff->ifFalse) {
-          if (iff->ifTrue->type.isNull()) {
+          if (flowsOutNull(iff->ifTrue)) {
             if (ref->type != iff->ifFalse->type) {
               refinalize = true;
             }
@@ -1573,7 +1643,7 @@ struct OptimizeInstructions
                                        iff->ifFalse);
             return false;
           }
-          if (iff->ifFalse->type.isNull()) {
+          if (flowsOutNull(iff->ifFalse)) {
             if (ref->type != iff->ifTrue->type) {
               refinalize = true;
             }
@@ -1585,14 +1655,20 @@ struct OptimizeInstructions
       }
 
       if (auto* select = ref->dynCast<Select>()) {
-        if (select->ifTrue->type.isNull()) {
+        // We must check for unreachability explicitly here because a full
+        // refinalize only happens at the end. That is, the select may stil be
+        // reachable after we turned one child into an unreachable, and we are
+        // calling getResultOfFirst which will error on unreachability.
+        if (flowsOutNull(select->ifTrue) &&
+            select->ifFalse->type != Type::unreachable) {
           ref = builder.makeSequence(
             builder.makeDrop(select->ifTrue),
             getResultOfFirst(select->ifFalse,
                              builder.makeDrop(select->condition)));
           return false;
         }
-        if (select->ifFalse->type.isNull()) {
+        if (flowsOutNull(select->ifFalse) &&
+            select->ifTrue->type != Type::unreachable) {
           ref = getResultOfFirst(
             select->ifTrue,
             builder.makeSequence(builder.makeDrop(select->ifFalse),
@@ -1654,8 +1730,6 @@ struct OptimizeInstructions
     if (fallthrough->type.isNull()) {
       replaceCurrent(
         getDroppedChildrenAndAppend(curr, builder.makeUnreachable()));
-      // Propagate the unreachability.
-      refinalize = true;
       return true;
     }
     return false;
@@ -1717,12 +1791,12 @@ struct OptimizeInstructions
   }
 
   void visitStructGet(StructGet* curr) {
-    skipNonNullCast(curr->ref);
+    skipNonNullCast(curr->ref, curr);
     trapOnNull(curr, curr->ref);
   }
 
   void visitStructSet(StructSet* curr) {
-    skipNonNullCast(curr->ref);
+    skipNonNullCast(curr->ref, curr);
     if (trapOnNull(curr, curr->ref)) {
       return;
     }
@@ -1878,30 +1952,31 @@ struct OptimizeInstructions
   }
 
   void visitArrayGet(ArrayGet* curr) {
-    skipNonNullCast(curr->ref);
+    skipNonNullCast(curr->ref, curr);
     trapOnNull(curr, curr->ref);
   }
 
   void visitArraySet(ArraySet* curr) {
-    skipNonNullCast(curr->ref);
+    skipNonNullCast(curr->ref, curr);
     if (trapOnNull(curr, curr->ref)) {
       return;
     }
 
-    if (curr->ref->type != Type::unreachable && curr->value->type.isInteger()) {
-      auto element = curr->ref->type.getHeapType().getArray().element;
-      optimizeStoredValue(curr->value, element.getByteSize());
+    if (curr->value->type.isInteger()) {
+      if (auto field = GCTypeUtils::getField(curr->ref->type)) {
+        optimizeStoredValue(curr->value, field->getByteSize());
+      }
     }
   }
 
   void visitArrayLen(ArrayLen* curr) {
-    skipNonNullCast(curr->ref);
+    skipNonNullCast(curr->ref, curr);
     trapOnNull(curr, curr->ref);
   }
 
   void visitArrayCopy(ArrayCopy* curr) {
-    skipNonNullCast(curr->destRef);
-    skipNonNullCast(curr->srcRef);
+    skipNonNullCast(curr->destRef, curr);
+    skipNonNullCast(curr->srcRef, curr);
     trapOnNull(curr, curr->destRef) || trapOnNull(curr, curr->srcRef);
   }
 
@@ -1961,6 +2036,22 @@ struct OptimizeInstructions
           // the value, though.
           if (ref->type.isNull()) {
             // We can materialize the resulting null value directly.
+            //
+            // The type must be nullable for us to do that, which it normally
+            // would be, aside from the interesting corner case of
+            // uninhabitable types:
+            //
+            //  (ref.cast func
+            //    (block (result (ref nofunc))
+            //      (unreachable)
+            //    )
+            //  )
+            //
+            // (ref nofunc) is a subtype of (ref func), so the cast might seem
+            // to be successful, but since the input is uninhabitable we won't
+            // even reach the cast. Such casts will be evaluated as
+            // Unreachable, so we'll not hit this assertion.
+            assert(curr->type.isNullable());
             replaceCurrent(builder.makeSequence(builder.makeDrop(curr->ref),
                                                 builder.makeRefNull(nullType)));
             return;
@@ -1973,8 +2064,10 @@ struct OptimizeInstructions
             builder.makeSequence(builder.makeDrop(curr->ref),
                                  builder.makeLocalGet(scratch, ref->type)));
           return;
-        } else if (result == GCTypeUtils::Failure) {
-          // This cast cannot succeed, so it will trap.
+        } else if (result == GCTypeUtils::Failure ||
+                   result == GCTypeUtils::Unreachable) {
+          // This cast cannot succeed, or it cannot even be reached, so we can
+          // trap.
           // Make sure to emit a block with the same type as us; leave updating
           // types for other passes.
           replaceCurrent(builder.makeBlock(
@@ -1982,14 +2075,33 @@ struct OptimizeInstructions
             curr->type));
           return;
         } else if (result == GCTypeUtils::SuccessOnlyIfNull) {
-          curr->type = Type(nullType, Nullable);
-          // Call replaceCurrent() to make us re-optimize this node, as we may
-          // have just unlocked further opportunities. (We could just continue
-          // down to the rest, but we'd need to do more work to make sure all
-          // the local state in this function is in sync which this change; it's
-          // easier to just do another clean pass on this node.)
-          replaceCurrent(curr);
-          return;
+          // If either cast or ref types were non-nullable then the cast could
+          // never succeed, and we'd have reached |Failure|, above.
+          assert(curr->type.isNullable() && curr->ref->type.isNullable());
+
+          // The cast either returns null, or traps. In trapsNeverHappen mode
+          // we know the result, since it by assumption will not trap.
+          if (getPassOptions().trapsNeverHappen) {
+            replaceCurrent(builder.makeBlock(
+              {builder.makeDrop(curr->ref), builder.makeRefNull(nullType)},
+              curr->type));
+            return;
+          }
+
+          // Without trapsNeverHappen we can at least sharpen the type here, if
+          // it is not already a null type.
+          auto newType = Type(nullType, Nullable);
+          if (curr->type != newType) {
+            curr->type = newType;
+            // Call replaceCurrent() to make us re-optimize this node, as we
+            // may have just unlocked further opportunities. (We could just
+            // continue down to the rest, but we'd need to do more work to
+            // make sure all the local state in this function is in sync
+            // which this change; it's easier to just do another clean pass
+            // on this node.)
+            replaceCurrent(curr);
+            return;
+          }
         }
 
         auto** last = refp;
@@ -2010,25 +2122,6 @@ struct OptimizeInstructions
 
     if (result == GCTypeUtils::Success) {
       replaceCurrent(curr->ref);
-
-      // We must refinalize here, as we may be returning a more specific
-      // type, which can alter the parent. For example:
-      //
-      //  (struct.get $parent 0
-      //   (ref.cast_static $parent
-      //    (local.get $child)
-      //   )
-      //  )
-      //
-      // Try to cast a $child to its parent, $parent. That always works,
-      // so the cast can be removed.
-      // Then once the cast is removed, the outer struct.get
-      // will have a reference with a different type, making it a
-      // (struct.get $child ..) instead of $parent.
-      // But if $parent and $child have different types on field 0 (the
-      // child may have a more refined one) then the struct.get must be
-      // refinalized so the IR node has the expected type.
-      refinalize = true;
       return;
     } else if (result == GCTypeUtils::SuccessOnlyIfNonNull) {
       // All we need to do is check for a null here.
@@ -2036,7 +2129,6 @@ struct OptimizeInstructions
       // As above, we must refinalize as we may now be emitting a more refined
       // type (specifically a more refined heap type).
       replaceCurrent(builder.makeRefAs(RefAsNonNull, curr->ref));
-      refinalize = true;
       return;
     }
 
@@ -2086,14 +2178,6 @@ struct OptimizeInstructions
 
     Builder builder(*getModule());
 
-    if (curr->ref->type.isNull()) {
-      // The input is null, so we know whether this will succeed or fail.
-      int32_t result = curr->castType.isNullable() ? 1 : 0;
-      replaceCurrent(builder.makeBlock(
-        {builder.makeDrop(curr->ref), builder.makeConst(int32_t(result))}));
-      return;
-    }
-
     // Parallel to the code in visitRefCast
     switch (GCTypeUtils::evaluateCastCheck(curr->ref->type, curr->castType)) {
       case GCTypeUtils::Unknown:
@@ -2101,6 +2185,14 @@ struct OptimizeInstructions
       case GCTypeUtils::Success:
         replaceCurrent(builder.makeBlock(
           {builder.makeDrop(curr->ref), builder.makeConst(int32_t(1))}));
+        break;
+      case GCTypeUtils::Unreachable:
+        // Make sure to emit a block with the same type as us, to avoid other
+        // code in this pass needing to handle unexpected unreachable code
+        // (which is only properly propagated at the end of this pass when we
+        // refinalize).
+        replaceCurrent(builder.makeBlock(
+          {builder.makeDrop(curr->ref), builder.makeUnreachable()}, Type::i32));
         break;
       case GCTypeUtils::Failure:
         replaceCurrent(builder.makeSequence(builder.makeDrop(curr->ref),
@@ -2155,7 +2247,10 @@ struct OptimizeInstructions
     }
 
     assert(curr->op == RefAsNonNull);
-    skipNonNullCast(curr->value);
+    if (trapOnNull(curr, curr->value)) {
+      return;
+    }
+    skipNonNullCast(curr->value, curr);
     if (!curr->value->type.isNullable()) {
       replaceCurrent(curr->value);
       return;
@@ -2676,7 +2771,8 @@ private:
           // must drop one value, so 3, while we save the condition, so it's
           // not clear this is worth it, TODO
         } else {
-          // value has no side effects
+          // The value has no side effects, so we can replace ourselves with one
+          // of the two identical values in the arms.
           auto condition = effects(c);
           if (!condition.hasSideEffects()) {
             return ifTrue;
@@ -2828,6 +2924,11 @@ private:
         }
       }
     };
+    // Noting the type here not only simplifies the code below, but is also
+    // necessary to avoid an error: if we look at walked->type then it may
+    // actually differ from the original type, say if the walk ended up turning
+    // |binary| into a simpler unreachable expression.
+    auto type = binary->type;
     Expression* walked = binary;
     ZeroRemover remover(getPassOptions());
     remover.setModule(getModule());
@@ -2840,14 +2941,14 @@ private:
       // Accumulated 64-bit constant value in 32-bit context will be wrapped
       // during downcasting. So it's valid unification for 32-bit and 64-bit
       // values.
-      c->value = Literal::makeFromInt64(constant, c->type);
+      c->value = Literal::makeFromInt64(constant, type);
       return c;
     }
     Builder builder(*getModule());
     return builder.makeBinary(
-      Abstract::getBinary(walked->type, Abstract::Add),
+      Abstract::getBinary(type, Abstract::Add),
       walked,
-      builder.makeConst(Literal::makeFromInt64(constant, walked->type)));
+      builder.makeConst(Literal::makeFromInt64(constant, type)));
   }
 
   // Given an i64.wrap operation, see if we can remove it. If all the things
@@ -3761,7 +3862,11 @@ private:
 
   // Returns true if the given binary operation can overflow. If we can't be
   // sure either way, we return true, assuming the worst.
-  bool canOverflow(Binary* binary) {
+  //
+  // We can check for an unsigned overflow (more than the max number of bits) or
+  // a signed one (where even reaching the sign bit is an overflow, as that
+  // would turn us from positive to negative).
+  bool canOverflow(Binary* binary, bool signed_) {
     using namespace Abstract;
 
     // If we know nothing about a limit on the amount of bits on either side,
@@ -3774,17 +3879,23 @@ private:
     }
 
     if (binary->op == getBinary(binary->type, Add)) {
-      // Proof this cannot overflow:
-      //
-      // left + right <  2^leftMaxBits + 2^rightMaxBits          (1)
-      //              <= 2^(typeMaxBits-1) + 2^(typeMaxBits-1)   (2)
-      //              =  2^typeMaxBits                           (3)
-      //
-      // (1) By the definition of the max bits (e.g. an int32 has 32 max bits,
-      //     and its max value is 2^32 - 1, which is < 2^32).
-      // (2) By the above checks and early returns.
-      // (3) 2^x + 2^x === 2*2^x === 2^(x+1)
-      return false;
+      if (!signed_) {
+        // Proof this cannot overflow:
+        //
+        // left + right <  2^leftMaxBits + 2^rightMaxBits          (1)
+        //              <= 2^(typeMaxBits-1) + 2^(typeMaxBits-1)   (2)
+        //              =  2^typeMaxBits                           (3)
+        //
+        // (1) By the definition of the max bits (e.g. an int32 has 32 max bits,
+        //     and its max value is 2^32 - 1, which is < 2^32).
+        // (2) By the above checks and early returns.
+        // (3) 2^x + 2^x === 2*2^x === 2^(x+1)
+        return false;
+      }
+
+      // For a signed comparison, check that the total cannot reach the sign
+      // bit.
+      return leftMaxBits + rightMaxBits >= typeMaxBits;
     }
 
     // TODO subtraction etc.
@@ -4102,7 +4213,7 @@ private:
         Const* c2;
         if (matches(curr,
                     binary(binary(&add, Add, any(), ival(&c1)), ival(&c2))) &&
-            !canOverflow(add)) {
+            !canOverflow(add, isSignedOp(curr->op))) {
           // We want to subtract C2-C1 or C1-C2. When doing so, we must avoid an
           // overflow in that subtraction (so that we keep all the math here
           // properly linear in the mathematical sense). Overflows that concern

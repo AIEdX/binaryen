@@ -83,6 +83,9 @@
 ;; CHECK-NEXT: Optimization passes:
 ;; CHECK-NEXT: --------------------
 ;; CHECK-NEXT:
+;; CHECK-NEXT:   --abstract-type-refining                      refine and merge abstract
+;; CHECK-NEXT:                                                 (never-created) types
+;; CHECK-NEXT:
 ;; CHECK-NEXT:   --alignment-lowering                          lower unaligned loads and stores
 ;; CHECK-NEXT:                                                 to smaller aligned ones
 ;; CHECK-NEXT:
@@ -396,7 +399,8 @@
 ;; CHECK-NEXT:                                                 signature types where possible
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --signext-lowering                            lower sign-ext operations to
-;; CHECK-NEXT:                                                 wasm mvp
+;; CHECK-NEXT:                                                 wasm mvp and disable the sign
+;; CHECK-NEXT:                                                 extension feature
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --simplify-globals                            miscellaneous globals-related
 ;; CHECK-NEXT:                                                 optimizations
@@ -672,13 +676,6 @@
 ;; CHECK-NEXT:   --pass-arg,-pa                                An argument passed along to
 ;; CHECK-NEXT:                                                 optimization passes being run.
 ;; CHECK-NEXT:                                                 Must be in the form KEY@VALUE
-;; CHECK-NEXT:
-;; CHECK-NEXT:   --nominal                                     Force all GC type definitions to
-;; CHECK-NEXT:                                                 be parsed as nominal.
-;; CHECK-NEXT:
-;; CHECK-NEXT:   --hybrid                                      Force all GC type definitions to
-;; CHECK-NEXT:                                                 be parsed using the isorecursive
-;; CHECK-NEXT:                                                 hybrid type system.
 ;; CHECK-NEXT:
 ;; CHECK-NEXT:   --closed-world,-cw                            Assume code outside of the
 ;; CHECK-NEXT:                                                 module does not inspect or

@@ -10,7 +10,7 @@
 
   ;; CHECK:      (type $i32_=>_i32 (func (param i32) (result i32)))
 
-  ;; CHECK:      (import "a" "b" (func $import (result i32)))
+  ;; CHECK:      (import "a" "b" (func $import (type $none_=>_i32) (result i32)))
   (import "a" "b" (func $import (result i32)))
 
 
@@ -587,7 +587,7 @@
 
   ;; CHECK:      (table $0 10 funcref)
 
-  ;; CHECK:      (elem (i32.const 0) $reffed)
+  ;; CHECK:      (elem $0 (i32.const 0) $reffed)
 
   ;; CHECK:      (export "table" (table $0))
   (export "table" (table 0))
@@ -640,7 +640,7 @@
 
   ;; CHECK:      (table $0 10 funcref)
 
-  ;; CHECK:      (elem (i32.const 0) $reffed)
+  ;; CHECK:      (elem $0 (i32.const 0) $reffed)
 
   ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
@@ -687,7 +687,7 @@
 
   ;; CHECK:      (table $0 10 funcref)
 
-  ;; CHECK:      (elem (i32.const 0) $reffed)
+  ;; CHECK:      (elem $0 (i32.const 0) $reffed)
 
   ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
@@ -737,7 +737,7 @@
 
   ;; CHECK:      (table $0 10 funcref)
 
-  ;; CHECK:      (elem (i32.const 0) $reffed)
+  ;; CHECK:      (elem $0 (i32.const 0) $reffed)
 
   ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
@@ -789,7 +789,7 @@
 
   ;; CHECK:      (table $0 10 funcref)
 
-  ;; CHECK:      (elem (i32.const 0) $reffed)
+  ;; CHECK:      (elem $0 (i32.const 0) $reffed)
 
   ;; CHECK:      (func $reffed (type $i) (param $x i32)
   ;; CHECK-NEXT:  (drop
@@ -869,7 +869,7 @@
 
   ;; CHECK:      (type $none_=>_none (func))
 
-  ;; CHECK:      (import "a" "b" (func $import (result i32)))
+  ;; CHECK:      (import "a" "b" (func $import (type $none_=>_i32) (result i32)))
   (import "a" "b" (func $import (result i32)))
 
   ;; CHECK:      (func $internal (type $none_=>_i32) (result i32)
@@ -930,11 +930,11 @@
 
   ;; CHECK:      (type $none_=>_none (func))
 
-  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call-without-effects (param i32 funcref)))
+  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call-without-effects (type $i32_funcref_=>_none) (param i32 funcref)))
   (import "binaryen-intrinsics" "call.without.effects"
     (func $call-without-effects (param i32 funcref)))
 
-  ;; CHECK:      (import "other" "import" (func $other-import (param funcref)))
+  ;; CHECK:      (import "other" "import" (func $other-import (type $funcref_=>_none) (param funcref)))
   (import "other" "import"
     (func $other-import (param funcref)))
 
@@ -1000,11 +1000,11 @@
 
   ;; CHECK:      (type $ref?|$A|_=>_none (func (param (ref null $A))))
 
-  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call-without-effects (param i32 funcref)))
+  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call-without-effects (type $i32_funcref_=>_none) (param i32 funcref)))
   (import "binaryen-intrinsics" "call.without.effects"
     (func $call-without-effects (param i32 funcref)))
 
-  ;; CHECK:      (import "other" "import" (func $other-import (param funcref)))
+  ;; CHECK:      (import "other" "import" (func $other-import (type $funcref_=>_none) (param funcref)))
   (import "other" "import"
     (func $other-import (param funcref)))
 

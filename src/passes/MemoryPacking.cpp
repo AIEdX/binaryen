@@ -69,7 +69,7 @@ using Replacements = std::unordered_map<Expression*, Replacement>;
 using Referrers = std::vector<Expression*>;
 
 // Map segment indices to referrers.
-using ReferrersMap = std::unordered_map<Index, Referrers>;
+using ReferrersMap = std::unordered_map<Name, Referrers>;
 
 // memory.init: 2 byte opcode + 1 byte segment index + 1 byte memory index +
 //              3 x 2 byte operands
@@ -119,9 +119,9 @@ struct MemoryPacking : public Pass {
                            size_t segmentsRemaining);
   void createReplacements(Module* module,
                           const std::vector<Range>& ranges,
+                          const std::vector<Name>& segments,
                           const Referrers& referrers,
-                          Replacements& replacements,
-                          const Index segmentIndex);
+                          Replacements& replacements);
   void replaceSegmentOps(Module* module, Replacements& replacements);
 };
 
@@ -155,9 +155,9 @@ void MemoryPacking::run(Module* module) {
 
   Replacements replacements;
   Builder builder(*module);
-  for (size_t origIndex = 0; origIndex < segments.size(); ++origIndex) {
-    auto& segment = segments[origIndex];
-    auto& currReferrers = referrers[origIndex];
+  for (size_t index = 0; index < segments.size(); ++index) {
+    auto& segment = segments[index];
+    auto& currReferrers = referrers[segment->name];
 
     std::vector<Range> ranges;
 
@@ -169,12 +169,16 @@ void MemoryPacking::run(Module* module) {
       ranges.push_back({false, 0, segment->data.size()});
     }
 
-    Index firstNewIndex = packed.size();
-    size_t segmentsRemaining = segments.size() - origIndex;
+    size_t segmentsRemaining = segments.size() - index;
+    size_t currSegmentsStart = packed.size();
     createSplitSegments(
       builder, segment.get(), ranges, packed, segmentsRemaining);
+    std::vector<Name> currSegmentNames;
+    for (size_t i = currSegmentsStart; i < packed.size(); ++i) {
+      currSegmentNames.push_back(packed[i]->name);
+    }
     createReplacements(
-      module, ranges, currReferrers, replacements, firstNewIndex);
+      module, ranges, currSegmentNames, currReferrers, replacements);
   }
 
   segments.swap(packed);
@@ -274,8 +278,8 @@ bool MemoryPacking::canSplit(const std::unique_ptr<DataSegment>& segment,
           return false;
         }
       }
-    } else if (referrer->is<ArrayNewSeg>()) {
-      // TODO: Split segments referenced by array.new_data instructions.
+    } else if (referrer->is<ArrayNewData>() || referrer->is<ArrayInitData>()) {
+      // TODO: Split segments referenced by GC instructions.
       return false;
     }
   }
@@ -394,7 +398,7 @@ void MemoryPacking::optimizeSegmentOps(Module* module) {
 
     void visitMemoryInit(MemoryInit* curr) {
       Builder builder(*getModule());
-      auto& segment = getModule()->dataSegments[curr->segment];
+      auto* segment = getModule()->getDataSegment(curr->segment);
       size_t maxRuntimeSize = segment->isPassive ? segment->data.size() : 0;
       bool mustNop = false;
       bool mustTrap = false;
@@ -439,7 +443,7 @@ void MemoryPacking::optimizeSegmentOps(Module* module) {
       }
     }
     void visitDataDrop(DataDrop* curr) {
-      if (!getModule()->dataSegments[curr->segment]->isPassive) {
+      if (!getModule()->getDataSegment(curr->segment)->isPassive) {
         ExpressionManipulator::nop(curr);
       }
     }
@@ -460,23 +464,38 @@ void MemoryPacking::getSegmentReferrers(Module* module,
     if (func->imported()) {
       return;
     }
-    struct Collector : WalkerPass<PostWalker<Collector>> {
+    struct Collector
+      : WalkerPass<PostWalker<Collector, UnifiedExpressionVisitor<Collector>>> {
       ReferrersMap& referrers;
       Collector(ReferrersMap& referrers) : referrers(referrers) {}
 
-      void visitMemoryInit(MemoryInit* curr) {
-        referrers[curr->segment].push_back(curr);
-      }
-      void visitDataDrop(DataDrop* curr) {
-        referrers[curr->segment].push_back(curr);
-      }
-      void visitArrayNewSeg(ArrayNewSeg* curr) {
-        if (curr->op == NewData) {
-          referrers[curr->segment].push_back(curr);
-        }
-      }
-      void doWalkFunction(Function* func) {
-        super::doWalkFunction(func);
+      void visitExpression(Expression* curr) {
+#define DELEGATE_ID curr->_id
+
+#define DELEGATE_START(id) [[maybe_unused]] auto* cast = curr->cast<id>();
+
+#define DELEGATE_GET_FIELD(id, field) cast->field
+
+#define DELEGATE_FIELD_TYPE(id, field)
+#define DELEGATE_FIELD_HEAPTYPE(id, field)
+#define DELEGATE_FIELD_CHILD(id, field)
+#define DELEGATE_FIELD_OPTIONAL_CHILD(id, field)
+#define DELEGATE_FIELD_INT(id, field)
+#define DELEGATE_FIELD_INT_ARRAY(id, field)
+#define DELEGATE_FIELD_LITERAL(id, field)
+#define DELEGATE_FIELD_NAME(id, field)
+#define DELEGATE_FIELD_NAME_VECTOR(id, field)
+#define DELEGATE_FIELD_SCOPE_NAME_DEF(id, field)
+#define DELEGATE_FIELD_SCOPE_NAME_USE(id, field)
+#define DELEGATE_FIELD_SCOPE_NAME_USE_VECTOR(id, field)
+#define DELEGATE_FIELD_ADDRESS(id, field)
+
+#define DELEGATE_FIELD_NAME_KIND(id, field, kind)                              \
+  if (kind == ModuleItemKind::DataSegment) {                                   \
+    referrers[cast->field].push_back(curr);                                    \
+  }
+
+#include "wasm-delegations-fields.def"
       }
     } collector(referrers);
     collector.walkFunctionInModule(func, module);
@@ -496,12 +515,11 @@ void MemoryPacking::dropUnusedSegments(
   std::vector<std::unique_ptr<DataSegment>>& segments,
   ReferrersMap& referrers) {
   std::vector<std::unique_ptr<DataSegment>> usedSegments;
-  ReferrersMap usedReferrers;
   // Remove segments that are never used
   // TODO: remove unused portions of partially used segments as well
   for (size_t i = 0; i < segments.size(); ++i) {
     bool used = false;
-    auto referrersIt = referrers.find(i);
+    auto referrersIt = referrers.find(segments[i]->name);
     bool hasReferrers = referrersIt != referrers.end();
     if (segments[i]->isPassive) {
       if (hasReferrers) {
@@ -518,9 +536,6 @@ void MemoryPacking::dropUnusedSegments(
     }
     if (used) {
       usedSegments.push_back(std::move(segments[i]));
-      if (hasReferrers) {
-        usedReferrers[usedSegments.size() - 1] = std::move(referrersIt->second);
-      }
     } else if (hasReferrers) {
       // All referrers are data.drops. Make them nops.
       for (auto* referrer : referrersIt->second) {
@@ -530,7 +545,6 @@ void MemoryPacking::dropUnusedSegments(
   }
   std::swap(segments, usedSegments);
   module->updateDataSegmentsMap();
-  std::swap(referrers, usedReferrers);
 }
 
 void MemoryPacking::createSplitSegments(
@@ -587,7 +601,7 @@ void MemoryPacking::createSplitSegments(
                                          segment->memory,
                                          segment->isPassive,
                                          offset,
-                                         &segment->data[range.start],
+                                         segment->data.data() + range.start,
                                          range.end - range.start);
     curr->hasExplicitName = hasExplicitName;
     packed.push_back(std::move(curr));
@@ -596,25 +610,11 @@ void MemoryPacking::createSplitSegments(
 
 void MemoryPacking::createReplacements(Module* module,
                                        const std::vector<Range>& ranges,
+                                       const std::vector<Name>& segments,
                                        const Referrers& referrers,
-                                       Replacements& replacements,
-                                       const Index segmentIndex) {
-  // If there was no transformation, only update the indices
+                                       Replacements& replacements) {
+  // If there was no transformation, we do not need to do anything.
   if (ranges.size() == 1 && !ranges.front().isZero) {
-    for (auto referrer : referrers) {
-      replacements[referrer] = [referrer, segmentIndex](Function*) {
-        if (auto* curr = referrer->dynCast<MemoryInit>()) {
-          curr->segment = segmentIndex;
-        } else if (auto* curr = referrer->dynCast<DataDrop>()) {
-          curr->segment = segmentIndex;
-        } else if (auto* curr = referrer->dynCast<ArrayNewSeg>()) {
-          curr->segment = segmentIndex;
-        } else {
-          WASM_UNREACHABLE("Unexpected segment operation");
-        }
-        return referrer;
-      };
-    }
     return;
   }
 
@@ -649,8 +649,9 @@ void MemoryPacking::createReplacements(Module* module,
     size_t start = init->offset->cast<Const>()->value.geti32();
     size_t end = start + init->size->cast<Const>()->value.geti32();
 
-    // Segment index used in emitted memory.init instructions
-    size_t initIndex = segmentIndex;
+    // Index in `segments` of the segment used in emitted memory.init
+    // instructions
+    size_t initIndex = 0;
 
     // Index of the range from which this memory.init starts reading
     size_t firstRangeIdx = 0;
@@ -715,8 +716,10 @@ void MemoryPacking::createReplacements(Module* module,
 
       // Calculate dest, either as a const or as an addition to the dest local
       Expression* dest;
+      Type ptrType = module->getMemory(init->memory)->indexType;
       if (auto* c = init->dest->dynCast<Const>()) {
-        dest = builder.makeConst(int32_t(c->value.geti32() + bytesWritten));
+        dest =
+          builder.makeConstPtr(c->value.getInteger() + bytesWritten, ptrType);
       } else {
         auto* get = builder.makeLocalGet(-1, Type::i32);
         getVars.push_back(&get->index);
@@ -729,18 +732,19 @@ void MemoryPacking::createReplacements(Module* module,
 
       // How many bytes are read from this range
       size_t bytes = std::min(range.end, end) - std::max(range.start, start);
-      Expression* size = builder.makeConst(int32_t(bytes));
       bytesWritten += bytes;
 
       // Create new memory.init or memory.fill
       if (range.isZero) {
         Expression* value = builder.makeConst(Literal::makeZero(Type::i32));
+        Expression* size = builder.makeConstPtr(bytes, ptrType);
         appendResult(builder.makeMemoryFill(dest, value, size, init->memory));
       } else {
         size_t offsetBytes = std::max(start, range.start) - range.start;
         Expression* offset = builder.makeConst(int32_t(offsetBytes));
-        appendResult(
-          builder.makeMemoryInit(initIndex, dest, offset, size, init->memory));
+        Expression* size = builder.makeConst(int32_t(bytes));
+        appendResult(builder.makeMemoryInit(
+          segments[initIndex], dest, offset, size, init->memory));
         initIndex++;
       }
     }
@@ -776,10 +780,10 @@ void MemoryPacking::createReplacements(Module* module,
       appendResult(
         builder.makeGlobalSet(dropStateGlobal, builder.makeConst(int32_t(1))));
     }
-    size_t dropIndex = segmentIndex;
+    size_t dropIndex = 0;
     for (auto range : ranges) {
       if (!range.isZero) {
-        appendResult(builder.makeDataDrop(dropIndex++));
+        appendResult(builder.makeDataDrop(segments[dropIndex++]));
       }
     }
     replacements[drop] = [result, module](Function*) {
@@ -804,21 +808,22 @@ void MemoryPacking::replaceSegmentOps(Module* module,
     }
 
     void visitMemoryInit(MemoryInit* curr) {
-      auto replacement = replacements.find(curr);
-      assert(replacement != replacements.end());
-      replaceCurrent(replacement->second(getFunction()));
+      if (auto replacement = replacements.find(curr);
+          replacement != replacements.end()) {
+        replaceCurrent(replacement->second(getFunction()));
+      }
     }
 
     void visitDataDrop(DataDrop* curr) {
-      auto replacement = replacements.find(curr);
-      assert(replacement != replacements.end());
-      replaceCurrent(replacement->second(getFunction()));
+      if (auto replacement = replacements.find(curr);
+          replacement != replacements.end()) {
+        replaceCurrent(replacement->second(getFunction()));
+      }
     }
 
-    void visitArrayNewSeg(ArrayNewSeg* curr) {
-      if (curr->op == NewData) {
-        auto replacement = replacements.find(curr);
-        assert(replacement != replacements.end());
+    void visitArrayNewData(ArrayNewData* curr) {
+      if (auto replacement = replacements.find(curr);
+          replacement != replacements.end()) {
         replaceCurrent(replacement->second(getFunction()));
       }
     }

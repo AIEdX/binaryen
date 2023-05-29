@@ -929,13 +929,13 @@ struct PrintExpressionContents
     o << "memory.init";
     restoreNormalColor(o);
     printMemoryName(curr->memory, o, wasm);
-    o << ' ' << curr->segment;
+    o << " $" << curr->segment;
   }
   void visitDataDrop(DataDrop* curr) {
     prepareColor(o);
     o << "data.drop";
     restoreNormalColor(o);
-    o << ' ' << curr->segment;
+    o << " $" << curr->segment;
   }
   void visitMemoryCopy(MemoryCopy* curr) {
     prepareColor(o);
@@ -2265,31 +2265,29 @@ struct PrintExpressionContents
     o << ' ';
     TypeNamePrinter(o, wasm).print(curr->type.getHeapType());
   }
-  void visitArrayNewSeg(ArrayNewSeg* curr) {
+  void visitArrayNewData(ArrayNewData* curr) {
     if (printUnreachableReplacement(curr)) {
       return;
     }
-    printMedium(o, "array.new_");
-    switch (curr->op) {
-      case NewData:
-        printMedium(o, "data");
-
-        break;
-      case NewElem:
-        printMedium(o, "elem");
-        break;
-      default:
-        WASM_UNREACHABLE("unexpected op");
-    }
+    printMedium(o, "array.new_data");
     o << ' ';
     TypeNamePrinter(o, wasm).print(curr->type.getHeapType());
-    o << ' ' << curr->segment;
+    o << " $" << curr->segment;
   }
-  void visitArrayInit(ArrayInit* curr) {
+  void visitArrayNewElem(ArrayNewElem* curr) {
     if (printUnreachableReplacement(curr)) {
       return;
     }
-    printMedium(o, "array.init_static");
+    printMedium(o, "array.new_elem");
+    o << ' ';
+    TypeNamePrinter(o, wasm).print(curr->type.getHeapType());
+    o << " $" << curr->segment;
+  }
+  void visitArrayNewFixed(ArrayNewFixed* curr) {
+    if (printUnreachableReplacement(curr)) {
+      return;
+    }
+    printMedium(o, "array.new_fixed");
     o << ' ';
     TypeNamePrinter(o, wasm).print(curr->type.getHeapType());
   }
@@ -2327,6 +2325,29 @@ struct PrintExpressionContents
     o << ' ';
     TypeNamePrinter(o, wasm).print(curr->srcRef->type.getHeapType());
   }
+  void visitArrayFill(ArrayFill* curr) {
+    if (printUnreachableOrNullReplacement(curr->ref)) {
+      return;
+    }
+    printMedium(o, "array.fill ");
+    TypeNamePrinter(o, wasm).print(curr->ref->type.getHeapType());
+  }
+  void visitArrayInitData(ArrayInitData* curr) {
+    if (printUnreachableOrNullReplacement(curr->ref)) {
+      return;
+    }
+    printMedium(o, "array.init_data ");
+    TypeNamePrinter(o, wasm).print(curr->ref->type.getHeapType());
+    o << " $" << curr->segment;
+  }
+  void visitArrayInitElem(ArrayInitElem* curr) {
+    if (printUnreachableOrNullReplacement(curr->ref)) {
+      return;
+    }
+    printMedium(o, "array.init_elem ");
+    TypeNamePrinter(o, wasm).print(curr->ref->type.getHeapType());
+    o << " $" << curr->segment;
+  }
   void visitRefAs(RefAs* curr) {
     switch (curr->op) {
       case RefAsNonNull:
@@ -2354,7 +2375,7 @@ struct PrintExpressionContents
       case StringNewWTF8:
         printMedium(o, "string.new_wtf8 wtf8");
         break;
-      case StringNewReplace:
+      case StringNewLossyUTF8:
         printMedium(o, "string.new_wtf8 replace");
         break;
       case StringNewWTF16:
@@ -2370,7 +2391,7 @@ struct PrintExpressionContents
       case StringNewWTF8Array:
         printMedium(o, "string.new_wtf8_array wtf8");
         break;
-      case StringNewReplaceArray:
+      case StringNewLossyUTF8Array:
         printMedium(o, "string.new_wtf8_array replace");
         break;
       case StringNewWTF16Array:
@@ -2404,6 +2425,9 @@ struct PrintExpressionContents
       case StringMeasureWTF16View:
         printMedium(o, "stringview_wtf16.length");
         break;
+      case StringMeasureHash:
+        printMedium(o, "string.hash");
+        break;
       default:
         WASM_UNREACHABLE("invalid string.measure*");
     }
@@ -2413,6 +2437,9 @@ struct PrintExpressionContents
       case StringEncodeUTF8:
         printMedium(o, "string.encode_wtf8 utf8");
         break;
+      case StringEncodeLossyUTF8:
+        printMedium(o, "string.encode_wtf8 replace");
+        break;
       case StringEncodeWTF8:
         printMedium(o, "string.encode_wtf8 wtf8");
         break;
@@ -2421,6 +2448,9 @@ struct PrintExpressionContents
         break;
       case StringEncodeUTF8Array:
         printMedium(o, "string.encode_wtf8_array utf8");
+        break;
+      case StringEncodeLossyUTF8Array:
+        printMedium(o, "string.encode_wtf8_array replace");
         break;
       case StringEncodeWTF8Array:
         printMedium(o, "string.encode_wtf8_array wtf8");
@@ -2889,10 +2919,13 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
   void visitArrayNew(ArrayNew* curr) {
     maybePrintUnreachableReplacement(curr, curr->type);
   }
-  void visitArrayNewSeg(ArrayNewSeg* curr) {
+  void visitArrayNewData(ArrayNewData* curr) {
     maybePrintUnreachableReplacement(curr, curr->type);
   }
-  void visitArrayInit(ArrayInit* curr) {
+  void visitArrayNewElem(ArrayNewElem* curr) {
+    maybePrintUnreachableReplacement(curr, curr->type);
+  }
+  void visitArrayNewFixed(ArrayNewFixed* curr) {
     maybePrintUnreachableReplacement(curr, curr->type);
   }
   void visitArraySet(ArraySet* curr) {
@@ -2920,6 +2953,10 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     }
     if (name.is()) {
       o << " $" << name;
+      if (currModule && currModule->features.hasGC()) {
+        o << " (type ";
+        printHeapType(o, curr, currModule) << ')';
+      }
     }
     if (sig.params.size() > 0) {
       o << maybeSpace;
@@ -3243,13 +3280,8 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
 
     doIndent(o, indent);
     o << '(';
-    printMedium(o, "elem");
-    // If there is no explicit name, and there are multiple segments, use our
-    // internal names to differentiate them.
-    if (curr->hasExplicitName || currModule->elementSegments.size() > 1) {
-      o << ' ';
-      printName(curr->name, o);
-    }
+    printMedium(o, "elem ");
+    printName(curr->name, o);
 
     if (curr->table.is()) {
       if (usesExpressions || currModule->tables.size() > 1) {
@@ -3280,7 +3312,7 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     } else {
       for (auto* entry : curr->data) {
         o << ' ';
-        printExpression(entry, o);
+        visit(entry);
       }
     }
     o << ')' << maybeNewLine;
@@ -3322,10 +3354,8 @@ struct PrintSExpression : public UnifiedExpressionVisitor<PrintSExpression> {
     doIndent(o, indent);
     o << '(';
     printMajor(o, "data ");
-    if (curr->hasExplicitName) {
-      printName(curr->name, o);
-      o << ' ';
-    }
+    printName(curr->name, o);
+    o << ' ';
     if (!curr->isPassive) {
       assert(!currModule || currModule->memories.size() > 0);
       if (!currModule || curr->memory != currModule->memories[0]->name) {
@@ -3754,6 +3784,17 @@ std::ostream& operator<<(std::ostream& o, wasm::Expression* expression) {
 
 std::ostream& operator<<(std::ostream& o, wasm::ModuleExpression pair) {
   return wasm::printExpression(pair.second, o, false, false, &pair.first);
+}
+
+std::ostream& operator<<(std::ostream& o, wasm::ShallowExpression expression) {
+  if (expression.module) {
+    wasm::PrintExpressionContents printer(expression.module, nullptr, o);
+    printer.visit(expression.expr);
+  } else {
+    wasm::PrintExpressionContents printer(nullptr, o);
+    printer.visit(expression.expr);
+  }
+  return o;
 }
 
 std::ostream& operator<<(std::ostream& o, wasm::StackInst& inst) {

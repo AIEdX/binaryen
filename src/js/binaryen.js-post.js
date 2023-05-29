@@ -115,7 +115,7 @@ function initializeConstants() {
     'StructGet',
     'StructSet',
     'ArrayNew',
-    'ArrayInit',
+    'ArrayNewFixed',
     'ArrayGet',
     'ArraySet',
     'ArrayLen',
@@ -391,6 +391,15 @@ function initializeConstants() {
     'XorVec128',
     'AndNotVec128',
     'BitselectVec128',
+    'RelaxedFmaVecF32x4',
+    'RelaxedFmsVecF32x4',
+    'RelaxedFmaVecF64x2',
+    'RelaxedFmsVecF64x2',
+    'LaneselectI8x16',
+    'LaneselectI16x8',
+    'LaneselectI32x4',
+    'LaneselectI64x2',
+    'DotI8x16I7x16AddSToVecI32x4',
     'AnyTrueVec128',
     'PopcntVecI8x16',
     'AbsVecI8x16',
@@ -548,7 +557,18 @@ function initializeConstants() {
     'TruncSatZeroUVecF64x2ToVecI32x4',
     'DemoteZeroVecF64x2ToVecF32x4',
     'PromoteLowVecF32x4ToVecF64x2',
+    'RelaxedTruncSVecF32x4ToVecI32x4',
+    'RelaxedTruncUVecF32x4ToVecI32x4',
+    'RelaxedTruncZeroSVecF64x2ToVecI32x4',
+    'RelaxedTruncZeroUVecF64x2ToVecI32x4',
     'SwizzleVecI8x16',
+    'RelaxedSwizzleVecI8x16',
+    'RelaxedMinVecF32x4',
+    'RelaxedMaxVecF32x4',
+    'RelaxedMinVecF64x2',
+    'RelaxedMaxVecF64x2',
+    'RelaxedQ15MulrSVecI16x8',
+    'DotI8x16I7x16SToVecI16x8',
     'RefAsNonNull',
     'RefAsExternInternalize',
     'RefAsExternExternalize',
@@ -558,21 +578,24 @@ function initializeConstants() {
     'BrOnCastFail',
     'StringNewUTF8',
     'StringNewWTF8',
-    'StringNewReplace',
+    'StringNewLossyUTF8',
     'StringNewWTF16',
     'StringNewUTF8Array',
     'StringNewWTF8Array',
-    'StringNewReplaceArray',
+    'StringNewLossyUTF8Array',
     'StringNewWTF16Array',
+    'StringNewFromCodePoint',
     'StringMeasureUTF8',
     'StringMeasureWTF8',
     'StringMeasureWTF16',
     'StringMeasureIsUSV',
     'StringMeasureWTF16View',
     'StringEncodeUTF8',
+    'StringEncodeLossyUTF8',
     'StringEncodeWTF8',
     'StringEncodeWTF16',
     'StringEncodeUTF8Array',
+    'StringEncodeLossyUTF8Array',
     'StringEncodeWTF8Array',
     'StringEncodeWTF16Array',
     'StringAsWTF8',
@@ -581,7 +604,9 @@ function initializeConstants() {
     'StringIterMoveAdvance',
     'StringIterMoveRewind',
     'StringSliceWTF8',
-    'StringSliceWTF16'
+    'StringSliceWTF16',
+    'StringEqEqual',
+    'StringEqCompare'
   ].forEach(name => {
     Module['Operations'][name] = Module[name] = Module['_Binaryen' + name]();
   });
@@ -735,7 +760,7 @@ function wrapModule(module, self = {}) {
       return Module['_BinaryenMemoryGrow'](module, value, strToStack(name), memory64);
     },
     'init'(segment, dest, offset, size, name) {
-      return Module['_BinaryenMemoryInit'](module, segment, dest, offset, size, strToStack(name));
+      return preserveStack(() => Module['_BinaryenMemoryInit'](module, strToStack(segment), dest, offset, size, strToStack(name)));
     },
     'copy'(dest, source, size, destMemory, sourceMemory) {
       return Module['_BinaryenMemoryCopy'](module, dest, source, size, strToStack(destMemory), strToStack(sourceMemory));
@@ -758,7 +783,7 @@ function wrapModule(module, self = {}) {
 
   self['data'] = {
     'drop'(segment) {
-      return Module['_BinaryenDataDrop'](module, segment);
+      return preserveStack(() => Module['_BinaryenDataDrop'](module, strToStack(segment)));
     }
   }
 
@@ -2546,13 +2571,13 @@ function wrapModule(module, self = {}) {
       const segmentOffset = new Array(segmentsLen);
       for (let i = 0; i < segmentsLen; i++) {
         const { data, offset, passive } = segments[i];
-        segmentData[i] = stackAlloc(data.length);
+        segmentData[i] = _malloc(data.length);
         HEAP8.set(data, segmentData[i]);
         segmentDataLen[i] = data.length;
         segmentPassive[i] = passive;
         segmentOffset[i] = offset;
       }
-      return Module['_BinaryenSetMemory'](
+      const ret = Module['_BinaryenSetMemory'](
         module, initial, maximum, strToStack(exportName),
         i32sToStack(segmentData),
         i8sToStack(segmentPassive),
@@ -2563,6 +2588,10 @@ function wrapModule(module, self = {}) {
         memory64,
         strToStack(internalName)
       );
+      for (let i = 0; i < segmentsLen; i++) {
+        _free(segmentData[i]);
+      }
+      return ret;
     });
   };
   self['hasMemory'] = function() {
@@ -3149,7 +3178,7 @@ Module['getExpressionInfo'] = function(expr) {
     case Module['MemoryInitId']:
       return {
         'id': id,
-        'segment': Module['_BinaryenMemoryInitGetSegment'](expr),
+        'segment': UTF8ToString(Module['_BinaryenMemoryInitGetSegment'](expr)),
         'dest': Module['_BinaryenMemoryInitGetDest'](expr),
         'offset': Module['_BinaryenMemoryInitGetOffset'](expr),
         'size': Module['_BinaryenMemoryInitGetSize'](expr)
@@ -3157,7 +3186,7 @@ Module['getExpressionInfo'] = function(expr) {
     case Module['DataDropId']:
       return {
         'id': id,
-        'segment': Module['_BinaryenDataDropGetSegment'](expr),
+        'segment': UTF8ToString(Module['_BinaryenDataDropGetSegment'](expr)),
       };
     case Module['MemoryCopyId']:
       return {
@@ -3394,7 +3423,7 @@ Module['readBinary'] = function(data) {
 // Parses text format to a module
 Module['parseText'] = function(text) {
   const buffer = _malloc(text.length + 1);
-  writeAsciiToMemory(text, buffer);
+  stringToAscii(text, buffer);
   const ptr = Module['_BinaryenModuleParse'](buffer);
   _free(buffer);
   return wrapModule(ptr);
@@ -4520,10 +4549,10 @@ Module['SIMDLoadStoreLane'] = makeExpressionWrapper({
 
 Module['MemoryInit'] = makeExpressionWrapper({
   'getSegment'(expr) {
-    return Module['_BinaryenMemoryInitGetSegment'](expr);
+    return UTF8ToString(Module['_BinaryenMemoryInitGetSegment'](expr));
   },
-  'setSegment'(expr, segmentIndex) {
-    Module['_BinaryenMemoryInitSetSegment'](expr, segmentIndex);
+  'setSegment'(expr, segment) {
+    preserveStack(() => Module['_BinaryenMemoryInitSetSegment'](expr, strToStack(segment)));
   },
   'getDest'(expr) {
     return Module['_BinaryenMemoryInitGetDest'](expr);
@@ -4547,10 +4576,10 @@ Module['MemoryInit'] = makeExpressionWrapper({
 
 Module['DataDrop'] = makeExpressionWrapper({
   'getSegment'(expr) {
-    return Module['_BinaryenDataDropGetSegment'](expr);
+    return UTF8ToString(Module['_BinaryenDataDropGetSegment'](expr));
   },
-  'setSegment'(expr, segmentIndex) {
-    Module['_BinaryenDataDropSetSegment'](expr, segmentIndex);
+  'setSegment'(expr, segment) {
+    preserveStack(() => Module['_BinaryenDataDropSetSegment'](expr, strToStack(segment)));
   }
 });
 

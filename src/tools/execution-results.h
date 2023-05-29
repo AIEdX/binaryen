@@ -116,19 +116,27 @@ struct ExecutionResults {
           if (values->size() > 0) {
             std::cout << "[fuzz-exec] note result: " << exp->name << " => ";
             auto resultType = func->getResults();
-            if (resultType.isRef()) {
+            if (resultType.isRef() && !resultType.isString()) {
               // Don't print reference values, as funcref(N) contains an index
               // for example, which is not guaranteed to remain identical after
               // optimizations.
               std::cout << resultType << '\n';
             } else {
+              // Non-references can be printed in full. So can strings, since we
+              // always know how to print them and there is just one string
+              // type.
               std::cout << *values << '\n';
             }
           }
         }
       }
     } catch (const TrapException&) {
-      // may throw in instance creation (init of offsets)
+      // May throw in instance creation (init of offsets).
+    } catch (const HostLimitException&) {
+      // May throw in instance creation (e.g. array.new of huge size).
+      // This should be ignored and not compared with, as optimizations can
+      // change whether a host limit is reached.
+      ignore = true;
     }
   }
 
@@ -216,19 +224,21 @@ struct ExecutionResults {
       ModuleRunner instance(wasm, &interface);
       return run(func, wasm, instance);
     } catch (const TrapException&) {
-      // may throw in instance creation (init of offsets)
+      // May throw in instance creation (init of offsets).
+      return {};
+    } catch (const HostLimitException&) {
+      // May throw in instance creation (e.g. array.new of huge size).
+      // This should be ignored and not compared with, as optimizations can
+      // change whether a host limit is reached.
+      ignore = true;
       return {};
     }
   }
 
   FunctionResult run(Function* func, Module& wasm, ModuleRunner& instance) {
     try {
-      Literals arguments;
-      // init hang support, if present
-      if (auto* ex = wasm.getExportOrNull("hangLimitInitializer")) {
-        instance.callFunction(ex->value, arguments);
-      }
       // call the method
+      Literals arguments;
       for (const auto& param : func->getParams()) {
         // zeros in arguments TODO: more?
         if (!param.isDefaultable()) {

@@ -188,15 +188,6 @@ BINARYEN_API bool BinaryenTypeIsNullable(BinaryenType type);
 BINARYEN_API BinaryenType BinaryenTypeFromHeapType(BinaryenHeapType heapType,
                                                    bool nullable);
 
-// TypeSystem
-
-typedef uint32_t BinaryenTypeSystem;
-
-BINARYEN_API BinaryenTypeSystem BinaryenTypeSystemNominal(void);
-BINARYEN_API BinaryenTypeSystem BinaryenTypeSystemIsorecursive(void);
-BINARYEN_API BinaryenTypeSystem BinaryenGetTypeSystem(void);
-BINARYEN_API void BinaryenSetTypeSystem(BinaryenTypeSystem typeSystem);
-
 // Expression ids (call to get the value of each; you can cache them)
 
 typedef uint32_t BinaryenExpressionId;
@@ -512,6 +503,15 @@ BINARYEN_API BinaryenOp BinaryenOrVec128(void);
 BINARYEN_API BinaryenOp BinaryenXorVec128(void);
 BINARYEN_API BinaryenOp BinaryenAndNotVec128(void);
 BINARYEN_API BinaryenOp BinaryenBitselectVec128(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedFmaVecF32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedFmsVecF32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedFmaVecF64x2(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedFmsVecF64x2(void);
+BINARYEN_API BinaryenOp BinaryenLaneselectI8x16(void);
+BINARYEN_API BinaryenOp BinaryenLaneselectI16x8(void);
+BINARYEN_API BinaryenOp BinaryenLaneselectI32x4(void);
+BINARYEN_API BinaryenOp BinaryenLaneselectI64x2(void);
+BINARYEN_API BinaryenOp BinaryenDotI8x16I7x16AddSToVecI32x4(void);
 BINARYEN_API BinaryenOp BinaryenAnyTrueVec128(void);
 BINARYEN_API BinaryenOp BinaryenPopcntVecI8x16(void);
 BINARYEN_API BinaryenOp BinaryenAbsVecI8x16(void);
@@ -669,7 +669,18 @@ BINARYEN_API BinaryenOp BinaryenTruncSatZeroSVecF64x2ToVecI32x4(void);
 BINARYEN_API BinaryenOp BinaryenTruncSatZeroUVecF64x2ToVecI32x4(void);
 BINARYEN_API BinaryenOp BinaryenDemoteZeroVecF64x2ToVecF32x4(void);
 BINARYEN_API BinaryenOp BinaryenPromoteLowVecF32x4ToVecF64x2(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedTruncSVecF32x4ToVecI32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedTruncUVecF32x4ToVecI32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedTruncZeroSVecF64x2ToVecI32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedTruncZeroUVecF64x2ToVecI32x4(void);
 BINARYEN_API BinaryenOp BinaryenSwizzleVecI8x16(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedSwizzleVecI8x16(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedMinVecF32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedMaxVecF32x4(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedMinVecF64x2(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedMaxVecF64x2(void);
+BINARYEN_API BinaryenOp BinaryenRelaxedQ15MulrSVecI16x8(void);
+BINARYEN_API BinaryenOp BinaryenDotI8x16I7x16SToVecI16x8(void);
 BINARYEN_API BinaryenOp BinaryenRefAsNonNull(void);
 BINARYEN_API BinaryenOp BinaryenRefAsExternInternalize(void);
 BINARYEN_API BinaryenOp BinaryenRefAsExternExternalize(void);
@@ -679,21 +690,24 @@ BINARYEN_API BinaryenOp BinaryenBrOnCast(void);
 BINARYEN_API BinaryenOp BinaryenBrOnCastFail(void);
 BINARYEN_API BinaryenOp BinaryenStringNewUTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringNewWTF8(void);
-BINARYEN_API BinaryenOp BinaryenStringNewReplace(void);
+BINARYEN_API BinaryenOp BinaryenStringNewLossyUTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringNewWTF16(void);
 BINARYEN_API BinaryenOp BinaryenStringNewUTF8Array(void);
 BINARYEN_API BinaryenOp BinaryenStringNewWTF8Array(void);
-BINARYEN_API BinaryenOp BinaryenStringNewReplaceArray(void);
+BINARYEN_API BinaryenOp BinaryenStringNewLossyUTF8Array(void);
 BINARYEN_API BinaryenOp BinaryenStringNewWTF16Array(void);
+BINARYEN_API BinaryenOp BinaryenStringNewFromCodePoint(void);
 BINARYEN_API BinaryenOp BinaryenStringMeasureUTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringMeasureWTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringMeasureWTF16(void);
 BINARYEN_API BinaryenOp BinaryenStringMeasureIsUSV(void);
 BINARYEN_API BinaryenOp BinaryenStringMeasureWTF16View(void);
 BINARYEN_API BinaryenOp BinaryenStringEncodeUTF8(void);
+BINARYEN_API BinaryenOp BinaryenStringEncodeLossyUTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringEncodeWTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringEncodeWTF16(void);
 BINARYEN_API BinaryenOp BinaryenStringEncodeUTF8Array(void);
+BINARYEN_API BinaryenOp BinaryenStringEncodeLossyUTF8Array(void);
 BINARYEN_API BinaryenOp BinaryenStringEncodeWTF8Array(void);
 BINARYEN_API BinaryenOp BinaryenStringEncodeWTF16Array(void);
 BINARYEN_API BinaryenOp BinaryenStringAsWTF8(void);
@@ -703,6 +717,8 @@ BINARYEN_API BinaryenOp BinaryenStringIterMoveAdvance(void);
 BINARYEN_API BinaryenOp BinaryenStringIterMoveRewind(void);
 BINARYEN_API BinaryenOp BinaryenStringSliceWTF8(void);
 BINARYEN_API BinaryenOp BinaryenStringSliceWTF16(void);
+BINARYEN_API BinaryenOp BinaryenStringEqEqual(void);
+BINARYEN_API BinaryenOp BinaryenStringEqCompare(void);
 
 BINARYEN_REF(Expression);
 
@@ -938,13 +954,13 @@ BinaryenSIMDLoadStoreLane(BinaryenModuleRef module,
                           const char* memoryName);
 BINARYEN_API BinaryenExpressionRef
 BinaryenMemoryInit(BinaryenModuleRef module,
-                   uint32_t segment,
+                   const char* segment,
                    BinaryenExpressionRef dest,
                    BinaryenExpressionRef offset,
                    BinaryenExpressionRef size,
                    const char* memoryName);
 BINARYEN_API BinaryenExpressionRef BinaryenDataDrop(BinaryenModuleRef module,
-                                                    uint32_t segment);
+                                                    const char* segment);
 BINARYEN_API BinaryenExpressionRef
 BinaryenMemoryCopy(BinaryenModuleRef module,
                    BinaryenExpressionRef dest,
@@ -1058,10 +1074,10 @@ BINARYEN_API BinaryenExpressionRef BinaryenArrayNew(BinaryenModuleRef module,
 // TODO: BinaryenArrayNewSeg
 
 BINARYEN_API BinaryenExpressionRef
-BinaryenArrayInit(BinaryenModuleRef module,
-                  BinaryenHeapType type,
-                  BinaryenExpressionRef* values,
-                  BinaryenIndex numValues);
+BinaryenArrayNewFixed(BinaryenModuleRef module,
+                      BinaryenHeapType type,
+                      BinaryenExpressionRef* values,
+                      BinaryenIndex numValues);
 BINARYEN_API BinaryenExpressionRef BinaryenArrayGet(BinaryenModuleRef module,
                                                     BinaryenExpressionRef ref,
                                                     BinaryenExpressionRef index,
@@ -1087,7 +1103,8 @@ BinaryenStringNew(BinaryenModuleRef module,
                   BinaryenExpressionRef ptr,
                   BinaryenExpressionRef length,
                   BinaryenExpressionRef start,
-                  BinaryenExpressionRef end);
+                  BinaryenExpressionRef end,
+                  bool try_);
 BINARYEN_API BinaryenExpressionRef BinaryenStringConst(BinaryenModuleRef module,
                                                        const char* name);
 BINARYEN_API BinaryenExpressionRef BinaryenStringMeasure(
@@ -1104,6 +1121,7 @@ BinaryenStringConcat(BinaryenModuleRef module,
                      BinaryenExpressionRef right);
 BINARYEN_API BinaryenExpressionRef
 BinaryenStringEq(BinaryenModuleRef module,
+                 BinaryenOp op,
                  BinaryenExpressionRef left,
                  BinaryenExpressionRef right);
 BINARYEN_API BinaryenExpressionRef BinaryenStringAs(BinaryenModuleRef module,
@@ -2006,11 +2024,12 @@ BINARYEN_API bool BinaryenSIMDLoadStoreLaneIsStore(BinaryenExpressionRef expr);
 
 // Gets the index of the segment being initialized by a `memory.init`
 // expression.
-BINARYEN_API uint32_t BinaryenMemoryInitGetSegment(BinaryenExpressionRef expr);
+BINARYEN_API const char*
+BinaryenMemoryInitGetSegment(BinaryenExpressionRef expr);
 // Sets the index of the segment being initialized by a `memory.init`
 // expression.
 BINARYEN_API void BinaryenMemoryInitSetSegment(BinaryenExpressionRef expr,
-                                               uint32_t segmentIndex);
+                                               const char* segment);
 // Gets the destination expression of a `memory.init` expression.
 BINARYEN_API BinaryenExpressionRef
 BinaryenMemoryInitGetDest(BinaryenExpressionRef expr);
@@ -2033,10 +2052,10 @@ BINARYEN_API void BinaryenMemoryInitSetSize(BinaryenExpressionRef expr,
 // DataDrop
 
 // Gets the index of the segment being dropped by a `data.drop` expression.
-BINARYEN_API uint32_t BinaryenDataDropGetSegment(BinaryenExpressionRef expr);
+BINARYEN_API const char* BinaryenDataDropGetSegment(BinaryenExpressionRef expr);
 // Sets the index of the segment being dropped by a `data.drop` expression.
 BINARYEN_API void BinaryenDataDropSetSegment(BinaryenExpressionRef expr,
-                                             uint32_t segmentIndex);
+                                             const char* segment);
 
 // MemoryCopy
 
@@ -2428,23 +2447,24 @@ BinaryenArrayNewGetSize(BinaryenExpressionRef expr);
 BINARYEN_API void BinaryenArrayNewSetSize(BinaryenExpressionRef expr,
                                           BinaryenExpressionRef sizeExpr);
 
-// ArrayInit
+// ArrayNewFixed
 
 BINARYEN_API BinaryenIndex
-BinaryenArrayInitGetNumValues(BinaryenExpressionRef expr);
-BINARYEN_API BinaryenExpressionRef
-BinaryenArrayInitGetValueAt(BinaryenExpressionRef expr, BinaryenIndex index);
-BINARYEN_API void BinaryenArrayInitSetValueAt(BinaryenExpressionRef expr,
-                                              BinaryenIndex index,
-                                              BinaryenExpressionRef valueExpr);
-BINARYEN_API BinaryenIndex BinaryenArrayInitAppendValue(
+BinaryenArrayNewFixedGetNumValues(BinaryenExpressionRef expr);
+BINARYEN_API BinaryenExpressionRef BinaryenArrayNewFixedGetValueAt(
+  BinaryenExpressionRef expr, BinaryenIndex index);
+BINARYEN_API void
+BinaryenArrayNewFixedSetValueAt(BinaryenExpressionRef expr,
+                                BinaryenIndex index,
+                                BinaryenExpressionRef valueExpr);
+BINARYEN_API BinaryenIndex BinaryenArrayNewFixedAppendValue(
   BinaryenExpressionRef expr, BinaryenExpressionRef valueExpr);
 BINARYEN_API void
-BinaryenArrayInitInsertValueAt(BinaryenExpressionRef expr,
-                               BinaryenIndex index,
-                               BinaryenExpressionRef valueExpr);
-BINARYEN_API BinaryenExpressionRef
-BinaryenArrayInitRemoveValueAt(BinaryenExpressionRef expr, BinaryenIndex index);
+BinaryenArrayNewFixedInsertValueAt(BinaryenExpressionRef expr,
+                                   BinaryenIndex index,
+                                   BinaryenExpressionRef valueExpr);
+BINARYEN_API BinaryenExpressionRef BinaryenArrayNewFixedRemoveValueAt(
+  BinaryenExpressionRef expr, BinaryenIndex index);
 
 // ArrayGet
 
@@ -2529,6 +2549,9 @@ BINARYEN_API BinaryenExpressionRef
 BinaryenStringNewGetEnd(BinaryenExpressionRef expr);
 BINARYEN_API void BinaryenStringNewSetEnd(BinaryenExpressionRef expr,
                                           BinaryenExpressionRef endExpr);
+BINARYEN_API void BinaryenStringNewSetTry(BinaryenExpressionRef expr,
+                                          bool try_);
+BINARYEN_API bool BinaryenStringNewIsTry(BinaryenExpressionRef expr);
 
 // StringConst
 
@@ -2578,6 +2601,9 @@ BINARYEN_API void BinaryenStringConcatSetRight(BinaryenExpressionRef expr,
 
 // StringEq
 
+BINARYEN_API BinaryenOp BinaryenStringEqGetOp(BinaryenExpressionRef expr);
+BINARYEN_API void BinaryenStringEqSetOp(BinaryenExpressionRef expr,
+                                        BinaryenOp op);
 BINARYEN_API BinaryenExpressionRef
 BinaryenStringEqGetLeft(BinaryenExpressionRef expr);
 BINARYEN_API void BinaryenStringEqSetLeft(BinaryenExpressionRef expr,
@@ -3501,12 +3527,6 @@ BINARYEN_API TypeBuilderRef TypeBuilderCreate(BinaryenIndex size);
 BINARYEN_API void TypeBuilderGrow(TypeBuilderRef builder, BinaryenIndex count);
 // Gets the size of the backing table of the type builder.
 BINARYEN_API BinaryenIndex TypeBuilderGetSize(TypeBuilderRef builder);
-// Sets the heap type at index `index` to a basic heap type. Must not be used in
-// nominal mode.
-BINARYEN_API void
-TypeBuilderSetBasicHeapType(TypeBuilderRef builder,
-                            BinaryenIndex index,
-                            BinaryenBasicHeapType basicHeapType);
 // Sets the heap type at index `index` to a concrete signature type. Expects
 // temporary tuple types if multiple parameter and/or result types include
 // temporary types.
@@ -3527,12 +3547,6 @@ BINARYEN_API void TypeBuilderSetArrayType(TypeBuilderRef builder,
                                           BinaryenType elementType,
                                           BinaryenPackedType elementPackedType,
                                           int elementMutable);
-// Tests if the heap type at index `index` is a basic heap type.
-BINARYEN_API bool TypeBuilderIsBasic(TypeBuilderRef builder,
-                                     BinaryenIndex index);
-// Gets the basic heap type at index `index`.
-BINARYEN_API BinaryenBasicHeapType TypeBuilderGetBasic(TypeBuilderRef builder,
-                                                       BinaryenIndex index);
 // Gets the temporary heap type to use at index `index`. Temporary heap types
 // may only be used to construct temporary types using the type builder.
 BINARYEN_API BinaryenHeapType TypeBuilderGetTempHeapType(TypeBuilderRef builder,
